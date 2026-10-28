@@ -1,0 +1,25 @@
+# Needs nothing from the other roots (no CRDs), so it applies on the first try.
+# Access control is users.acl: see the smoke test's valkey section for what it
+# must hold before an image is pushed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: valkey
+
+resources:
+  - namespace.yaml
+  - valkey.yaml
+
+# A generated ConfigMap gets a content-hash suffix and kustomize rewrites the
+# reference in the StatefulSet, so editing valkey.conf rolls the pod by itself.
+configMapGenerator:
+  - name: valkey-config
+    files:
+      - valkey.conf
+
+# Holds only the SHA-256 of the password, never the password. Same hash-suffix
+# behaviour: a new hash rolls the pod.
+secretGenerator:
+  - name: valkey-acl
+    files:
+      - users.acl

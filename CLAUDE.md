@@ -21,8 +21,9 @@ reaches the internet.
 - **MicroShift 4.20** is the only variant. A k3s variant was built by nothing and removed; it
   is in git history
 - On the cluster: cert-manager, External Secrets, KServe (Standard mode), a Triton
-  `ClusterServingRuntime` and a per-device CA published to every namespace, from `services/`.
-  Still to come: PostgreSQL, RabbitMQ, the first `InferenceService`
+  `ClusterServingRuntime`, a per-device CA published to every namespace and Valkey (one pod,
+  the primary), from `services/`. Still to come: PostgreSQL, RabbitMQ, the first
+  `InferenceService`
 - Every container image physically bound into the OS image (zero network at first boot)
 - A kiosk: a monitor on the Jetson's DisplayPort shows the frontend in Firefox, fullscreen. It
   must be on the Jetson itself (maintainer's requirement; a separate display box was offered and
@@ -394,7 +395,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 - `microshift/manifest-images.sh` — prints every image the given manifest roots name, rendered
   with `oc kustomize` (release-info lists only the control plane, and `images:` transformers
   defeat a grep). The build embeds what it prints; `services/` uses it too.
-- `services/Containerfile` — six numbered roots under `/usr/lib/microshift/manifests.d/`, plus
+- `services/Containerfile` — seven numbered roots under `/usr/lib/microshift/manifests.d/`, plus
   every image they name. MicroShift **sorts** the roots and applies each with the equivalent of
   `kubectl apply -k`, retrying a failing one **every 10 s for 10 minutes**
   (`pkg/kustomize/kustomize.go`) — that is the ordering and what covers a CRD not yet served.
@@ -477,23 +478,62 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     spelled out, 8Gi 1:1, CPU 1 → 4, TensorRT and ONNX. Pod-wide settings such as
     `supplementalGroups` go on the InferenceService. Plans load only in this image's TensorRT:
     build them with its `trtexec` on an Orin, and rebuild when the tag moves.
+  - `050-valkey/` — **checked locally, not dispatched, not on hardware.** Locally: the smoke
+    test's render, valkey, restricted-v2, resource and pull-policy checks against this root
+    (kustomize 5.4.3 standing in for `oc`, ten deliberately broken variants each caught), and
+    Valkey 9.1.1 built from source with this `valkey.conf` and `users.acl` (`NOAUTH`, the probe
+    user, `NOPERM`, `WRONGPASS`, `LOADING`, a SIGTERM save surviving a restart, the placeholder
+    aborting startup). Not checked: the arm64 image, topolvm's fsGroup, MicroShift applying the
+    root. Our own manifests (no upstream to curl, so no version ARG: the tag in `valkey.yaml`
+    is the pin), namespace `valkey`. One `StatefulSet` replica,
+    `docker.io/valkey/valkey:9.1.1-alpine3.24` (alpine for the eMMC: every image is paid for
+    twice), a ClusterIP `Service` on 6379 and nothing else
+    reaches it (the firewall opens only 22, 443, 6443). 512Mi 1:1, CPU 100m → 400m, and
+    `maxmemory 256mb` (half: a snapshot forks and copy-on-write can touch every page, and the
+    container is OOM-killed at its limit); `noeviction`, a data store. 1Gi PVC on the default
+    StorageClass (topolvm). RDB only, `save 3600 1 300 100`, no AOF: the eMMC has poor
+    endurance; SIGTERM saves first, hence a 30 s grace period. restricted-v2 as everywhere
+    (no `runAsUser`; `command:` skips the image entrypoint, which only exists to drop root).
+    **Access control is an ACL file, not `requirepass`**: `users.acl` in a generated Secret,
+    mounted at `/etc/valkey-acl`, with `aclfile` in `valkey.conf`. Three users: `default`
+    **off** (leave the line out and Valkey makes its own, open one: an unauthenticated write
+    works), `app` with `#<sha256 of the password>` and full access, and `probe`, `nopass` and
+    `+ping` only, which the probes log in as (a bare `ping` gets `NOAUTH`); they pipe through
+    `grep PONG` because a server still loading answers `LOADING`, not an error exit.
+    `valkey.conf` may not also hold `user` lines, and keeps `protected-mode` on: with an open
+    default user it still refuses non-loopback clients, even with an explicit `bind`. **The
+    password is never in git or the image, only its hash** (unsalted SHA-256, so make the
+    password `openssl rand -hex 32`; same exposure the kiosk hash accepts). **The committed
+    hash is a placeholder**: Valkey aborts on it and the smoke test rejects it, so no services
+    image can be pushed until it is replaced:
+    `printf %s "$PW" | sha256sum | cut -d' ' -f1`. Clients get the plaintext from a Secret in
+    their own namespace (`username=app`), at `valkey.valkey.svc.cluster.local:6379`. A user
+    added at run time with `ACL SETUSER` lasts until the next restart (the file is read-only);
+    a new user goes in `users.acl`, and the new Secret hash rolls the pod. Per-client
+    isolation is a user per client restricted to a key prefix (`~billing:*`), not numbered
+    databases. Not done: TLS (a cert-manager `Certificate`), a separate admin user, a metrics
+    exporter, replicas.
   **Resources rule**, every root: memory request = limit (OOM-killed at its own ceiling, never
   evicted for outgrowing a request), CPU limit = 4 × request (burst room at start-up). Pods
   stay Burstable. Upstream sets almost none of this.
-  **Images are derived from the render**: the version ARGs are the only pin. Seven today
-  (`015`/`025` add none): cert-manager ×3, External Secrets, `kserve-controller`,
-  `kube-rbac-proxy`, and `tritonserver:25.02-py3-igpu` (the largest). The scan reads only
-  `image:` fields, so a model's `oci://` image, and images named inside
-  `inferenceservice-config`, go in `SERVICE_IMAGES` when used.
+  **Images are derived from the render**: the version ARGs are the only pin, except Valkey's,
+  which is the tag in its StatefulSet. Eight today (`015`/`025` add none): cert-manager ×3,
+  External Secrets, `kserve-controller`, `kube-rbac-proxy`, `valkey:9.1.1-alpine3.24` and
+  `tritonserver:25.02-py3-igpu` (the largest). The scan reads only `image:` fields, so a
+  model's `oci://` image, and images named inside `inferenceservice-config`, go in
+  `SERVICE_IMAGES` when used.
   **Smoke test**: renders every root with `oc kustomize` and checks the workload set per root;
   External Secrets without `runAsUser`, with `runAsNonRoot`, in its own namespace and naming
   `default` nowhere outside its CRDs; `inferenceservice-config` values; every pod template and
   serving-runtime container admissible under restricted-v2; requests, limits and ratios; no
   container whose pull policy is, or defaults to, `Always`; every image qualified and embedded;
   every `mapping.txt` reference pinned by `crio config`; no `ClusterStorageContainer`; one
-  KServe tag. It prints `du -sh` of the cache, which the eMMC pays for twice
-  (`/usr` and containers-storage). Pods KServe builds at run time are in no render: their
-  admission and GPU access are hardware questions.
+  KServe tag; and for Valkey: `user default off` present, no plaintext `>` password, `probe`
+  limited to `+ping`, `nopass` only on `probe`, every other user holding a 64-digit `#` hash
+  (what rejects the placeholder), no `user` lines or `protected-mode no` in `valkey.conf`, and
+  `aclfile`'s directory mounted by the container. It prints `du -sh` of the cache, which the
+  eMMC pays for twice (`/usr` and containers-storage). Pods KServe builds at run time are in
+  no render: their admission and GPU access are hardware questions.
 - `config.toml` — project-wide bib config with a **custom kickstart** (bib then adds only
   `ostreecontainer`; `[customizations.user]`/`filesystem` cannot be combined with it):
   `text --non-interactive`, `timezone Asia/Jerusalem --utc`, static `192.168.1.10/24` gw
@@ -606,11 +646,11 @@ hardware.
    removed by the prune.
 3. Device plugin: the DaemonSet runs and allocatable `nvidia.com/gpu` equals the replica
    count. Run that many GPU pods at once and watch for OOM.
-4. Services: pods Running in `cert-manager` (3), `external-secrets-operator` (3) and `kserve`
-   (1), with no registry. A failing `runAsUser` patch shows in `oc describe rs`. Check resources
-   survived (`oc get deploy -A -o jsonpath`). `journalctl -u microshift | grep -i kustomization`
-   shows a root still retrying — watch `040`. Every services pod's `openshift.io/scc` annotation
-   should be `restricted-v2`.
+4. Services: pods Running in `cert-manager` (3), `external-secrets-operator` (3), `kserve`
+   (1) and `valkey` (1), with no registry. A failing `runAsUser` patch shows in `oc describe
+   rs`. Check resources survived (`oc get deploy -A -o jsonpath`). `journalctl -u microshift |
+   grep -i kustomization` shows a root still retrying — watch `040`. Every services pod's
+   `openshift.io/scc` annotation should be `restricted-v2`.
    Device CA: `oc get certificate,clusterissuer -A` Ready; `oc get secret -n cert-manager
    device-ca-public -o jsonpath='{.data}'` has `ca.crt` only; `oc get cm -A
    --field-selector metadata.name=ca-bundle` lists every namespace, and a new namespace
@@ -619,6 +659,14 @@ hardware.
    verifies with `openssl verify -CAfile` against the ConfigMap. `oc auth can-i get
    secret/device-ca -n cert-manager --as=system:serviceaccount:cert-manager:device-ca-bundle-reader`
    → no.
+   Valkey: Ready (the probe user works); `valkey-cli ping` with no login gets `NOAUTH`,
+   `--user app` with the password works and a wrong one gets `WRONGPASS`;
+   `oc exec valkey-0 -- ls -ldn /data` is writable by the assigned UID (topolvm must apply the
+   fsGroup, unverified; a failed save in `INFO persistence` says otherwise); `SET`, `SAVE`,
+   delete the pod and reboot, the key survives; the log's `vm.overcommit_memory` and
+   Transparent Huge Pages warnings matter for the snapshot fork (a `sysctl.d` drop-in and
+   `transparent_hugepage=madvise` would fix them, neither is added); the arm64 variant of the
+   tag pulls and starts.
 5. Serve a model: first `pvc://` (model repository `oc cp`'d into a topolvm PVC), proving the
    Triton tag runs on r36.5 and an SCC-assigned UID can open the GPU (`id`, `ls -ln
    /dev/nvhost-ctrl-gpu /dev/nvmap`; if `root:video 0660`, add `supplementalGroups` on the
@@ -658,7 +706,10 @@ node's origin, and whether `stable` should wait for a hardware boot (today it mo
 `main`);
 lowering kubelet's image GC thresholds below the eviction line (only matters once images are
 pulled); whether the `services/` resource sizes survive hardware (the ratios are enforced, the
-sizes are guesses); the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
+sizes are guesses); Valkey: a cache or a data store that must survive reboots (the PVC,
+`noeviction` and RDB-only assume the latter), where the password hash comes from (git, as now,
+or a build secret like the kiosk's), TLS, and whether a client gets its own prefix-scoped
+user; the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
 the frontend's video codec, preview size and on-screen keyboard.
 
 ## How to work in this repo

@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  labels:
+    app.kubernetes.io/name: valkey
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: valkey
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+  labels:
+    app.kubernetes.io/name: valkey
+spec:
+  serviceName: valkey
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey
+    spec:
+      # Valkey saves a snapshot on SIGTERM; give it time to write.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: valkey
+          image: docker.io/valkey/valkey:9.1.1-alpine3.24
+          imagePullPolicy: IfNotPresent
+          # Explicit command: skips the image entrypoint, which only exists to
+          # drop root, and restricted-v2 never runs us as root.
+          command: ["valkey-server", "/etc/valkey/valkey.conf"]
+          ports:
+            - name: valkey
+              containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 400m
+              memory: 512Mi
+          # The default user is off, so a bare PING would be refused. The probe
+          # user (users.acl) can run PING and nothing else; the grep matters
+          # because a server still loading its snapshot answers PING with an
+          # error, and that must not count as ready.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - valkey-cli --user probe --pass probe --no-auth-warning ping | grep -q PONG
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - valkey-cli --user probe --pass probe --no-auth-warning ping | grep -q PONG
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/valkey
+              readOnly: true
+            - name: acl
+              mountPath: /etc/valkey-acl
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: valkey-config
+        - name: acl
+          secret:
+            secretName: valkey-acl
+            defaultMode: 0440
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

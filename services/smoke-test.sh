@@ -72,6 +72,7 @@ expect_workloads 020-external-secrets \
 Deployment/external-secrets-cert-controller
 Deployment/external-secrets-webhook"
 expect_workloads 030-kserve "Deployment/kserve-controller-manager"
+expect_workloads 050-valkey "StatefulSet/valkey"
 
 eso=$render/020-external-secrets.json
 
@@ -156,6 +157,63 @@ echo "   storageInitializer image: $si_image"
 csc=$(jq -r '.[] | select(.kind == "ClusterStorageContainer") | .metadata.name' "$ksv")
 [[ -z $csc ]] || fail "the kserve render carries a ClusterStorageContainer:" $csc
 echo "   no ClusterStorageContainer"
+
+echo "== valkey access control =="
+# Valkey ships with a passwordless default user, and the pod is reachable from
+# every other pod. users.acl switches that user off and holds the SHA-256 of each
+# real password, never the password. Checked here because a wrong ACL does not
+# fail the build: the pod just crash-loops on a node nobody can ssh into, or,
+# worse, starts open.
+vk=/usr/lib/microshift/manifests.d/050-valkey
+acl=$vk/users.acl
+[[ -s $acl ]] || fail "missing or empty: $acl" "$(ls -la "$vk" 2>&1)"
+# Valkey makes the default user itself when the file does not mention it, and
+# that one is on, nopass and allowed everything: an unauthenticated write works.
+grep -Eq '^user default off( |$)' "$acl" \
+	|| fail "$acl has no 'user default off' line; without it Valkey keeps its" \
+		"built-in default user, which needs no password and can run anything"
+echo "   default user: off"
+# Plaintext after > would put a password in git and in every registry.
+! grep -Eq '(^| )>' "$acl" \
+	|| fail "$acl holds a plaintext password (a > token); use #<sha256> instead"
+# The probe user exists so the pod can be checked with the default user off.
+# It may only PING, with no keys and no channels.
+grep -q '^user probe ' "$acl" \
+	|| fail "$acl has no probe user, which the readiness and liveness probes log in as"
+extra=$(awk '$1 == "user" && $2 == "probe" { for (i = 3; i <= NF; i++)
+	if ($i ~ /^[+~&]/ && $i != "+ping") print $i }' "$acl")
+[[ -z $extra ]] || fail "the probe user may only run PING, but users.acl gives it:" $extra
+nopass=$(grep -E '(^| )nopass( |$)' "$acl" | grep -v '^user probe ' || true)
+[[ -z $nopass ]] || fail "a user other than probe has no password:" "$nopass"
+echo "   probe user: PING only"
+# Every other user needs a 64-digit hash. The placeholder shipped in git does
+# not match, so an image cannot be pushed until a real hash replaces it.
+re='(^| )#[0-9a-f]{64}( |$)'
+users=0
+while read -r _ name rules; do
+	[[ $name == default || $name == probe ]] && continue
+	[[ $rules =~ $re ]] \
+		|| fail "valkey user $name in $acl has no #<64 hex digit sha256> password hash;" \
+			"hash one with: printf %s \"\$PW\" | sha256sum | cut -d' ' -f1"
+	users=$((users + 1))
+	echo "   user $name: password hash"
+done < <(grep '^user ' "$acl")
+(( users > 0 )) || fail "$acl has no user a client can log in as"
+# The conf and the StatefulSet are separate files that have to agree. Valkey
+# refuses to start with user lines in the conf next to an aclfile, and the Secret
+# key is the file name.
+conf=$vk/valkey.conf
+aclpath=$(awk '$1 == "aclfile" { print $2 }' "$conf")
+[[ $aclpath == */users.acl ]] \
+	|| fail "valkey.conf must say aclfile <dir>/users.acl (the Secret key), got: ${aclpath:-nothing}"
+! grep -Eq '^user ' "$conf" || fail "valkey.conf has user lines next to an aclfile; Valkey refuses to start"
+! grep -Eq '^protected-mode[[:space:]]+no' "$conf" \
+	|| fail "valkey.conf turns protected-mode off, which is the net under the ACL"
+mounted=$(jq -r --arg d "$(dirname "$aclpath")" "$W"'
+	workloads | podspec | .containers[] | .volumeMounts[]?
+	| select(.mountPath == $d) | .name' "$render/050-valkey.json")
+[[ -n $mounted ]] || fail "no container mounts $(dirname "$aclpath"), where valkey.conf looks for $aclpath"
+echo "   aclfile $aclpath is mounted from the Secret"
 
 echo "== restricted-v2 =="
 # Every pod template and serving runtime container, checked for what the SCC

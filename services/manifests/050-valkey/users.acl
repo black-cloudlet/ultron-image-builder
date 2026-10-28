@@ -1,0 +1,3 @@
+user default off -@all
+user app on #REPLACE_WITH_SHA256_HEX_OF_THE_PASSWORD ~* &* +@all
+user probe on nopass -@all +ping
