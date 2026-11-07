@@ -88,7 +88,7 @@ This repository is the right-hand column.
 ## The layers
 
 The image is built as a chain of five container images. Each is `FROM` the one before it, by
-digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/jetson-orin-bootc-<name>`:
+digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-bootc-<name>`:
 
 ```
  base            Red Hat's JetPack-for-RHEL image, republished under our name
@@ -106,11 +106,15 @@ digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/jetson-
 
 | Layer | Built from | Published as | Adds | Needs RHEL entitlement |
 |---|---|---|---|---|
-| base | `base/Containerfile.base` | `jetson-orin-bootc-base` | nothing: a pure republish of the vendor image | no (registers anyway, one code path) |
-| bound-images | `base/Containerfile.podman` | `jetson-orin-bootc-bound-images` | the scripts and boot unit that embed and restore container images; `jtop`; the Edge Manager agent | yes (`python3-pip`, `rhacm` repo) |
-| kiosk | `kiosk/Containerfile` | `jetson-orin-bootc-kiosk` | GDM, GNOME Kiosk, Firefox, the `kiosk` user | yes (AppStream) |
-| microshift | `microshift/Containerfile` | `jetson-orin-bootc-microshift` | MicroShift, firewall, node networking, GPU device plugin, 9+ embedded images | yes (`rhocp` + `fast-datapath` repos) |
-| services | `services/Containerfile` | `jetson-orin-bootc-services` | four kustomize roots applied by MicroShift, 7 embedded images | no RPMs |
+| base | `base/Containerfile.base` | `ultron-bootc-base` | nothing: a pure republish of the vendor image | no (registers anyway, one code path) |
+| bound-images | `base/Containerfile.podman` | `ultron-bootc-bound-images` | the scripts and boot unit that embed and restore container images; `jtop`; the Edge Manager agent | yes (`python3-pip`, `rhacm` repo) |
+| kiosk | `kiosk/Containerfile` | `ultron-bootc-kiosk` | GDM, GNOME Kiosk, Firefox, the `kiosk` user | yes (AppStream) |
+| microshift | `microshift/Containerfile` | `ultron-bootc-microshift` | MicroShift, firewall, node networking, GPU device plugin, 9+ embedded images | yes (`rhocp` + `fast-datapath` repos) |
+| services | `services/Containerfile` | `ultron-bootc-services`, and `ultron-bootc` | four kustomize roots applied by MicroShift, 7 embedded images | no RPMs |
+
+The top layer is the finished OS, so it is also pushed as **`ghcr.io/black-cloudlet/ultron-bootc`**,
+with the same tags. That is the name to mirror and boot. The ISO still installs
+`ultron-bootc-services` by digest, which is the same manifest.
 
 **Why a chain instead of one Containerfile:** rebuild cost. The microshift layer installs RPMs
 and pulls MicroShift's whole control plane (nine images); the services layer changes far more
@@ -158,7 +162,7 @@ present. It also fails if this layer embedded any image, since anything embedded
 paid for by every variant.
 
 The file name and the image name differ: `Containerfile.podman` builds the image published as
-`jetson-orin-bootc-bound-images`, from a CI job spelled `bound_images`. The underscore matters:
+`ultron-bootc-bound-images`, from a CI job spelled `bound_images`. The underscore matters:
 `needs.bound-images` would parse as a subtraction.
 
 ### kiosk: Firefox on the DisplayPort output
@@ -414,9 +418,9 @@ Seven images come from the services layer today: cert-manager ×3, External Secr
 |---|---|---|
 | `.github/workflows/build-image.yml` | reusable (`workflow_call`) | builds, tests and pushes **one layer** |
 | `.github/workflows/build-iso.yml` | reusable (`workflow_call`) | turns a pushed image into an **installer ISO** |
-| `.github/workflows/build-microshift.yml` | caller | chains them: `base` → `bound_images` → `kiosk` → `microshift` → `services` → `iso` |
+| `.github/workflows/ultron.yml` | caller | chains them: `base` → `bound_images` → `kiosk` → `microshift` → `services` → `iso` |
 
-`build-microshift.yml` runs on **push to `main`** that touches `base/`, `kiosk/`, `microshift/`,
+`ultron.yml` runs on **push to `main`** that touches `base/`, `kiosk/`, `microshift/`,
 `services/`, `config.toml` or the workflows, and on **manual dispatch** (`workflow_dispatch`).
 **Nothing runs on a pull request**: to validate a branch, dispatch the workflow against it from the Actions tab.
 
@@ -424,7 +428,7 @@ Seven images come from the services layer today: cert-manager ×3, External Secr
 
 GitHub has no RHEL runner, so each job runs on **`ubuntu-24.04-arm`** (native arm64; emulating
 arm64 is not viable) **inside a `registry.access.redhat.com/ubi9/ubi` container**. The container
-supplies RHEL's `podman`, `buildah` and `skopeo`, and a `subscription-manager register` inside it
+supplies RHEL's `podman`, and a `subscription-manager register` inside it
 supplies entitlement for the RHEL and OpenShift repos.
 
 The runner's `/mnt` disk is mounted as `/scratch`, and container storage, `/var/tmp` and the ISO
@@ -435,9 +439,10 @@ strips `metacopy` and fails unless `podman info` reports `Native Overlay Diff:tr
 
 ### One layer (`build-image.yml`)
 
-1. Install podman/buildah/skopeo/jq in the UBI container and register with Red Hat.
+1. Install podman and jq in the UBI container and register with Red Hat.
 2. Move container storage onto `/scratch`.
-3. Compute tags and validate them *before* the build.
+3. Compute the tags (`latest` and `stable` only on `main`) and validate the `also-as` name
+   *before* the build.
 4. Log in to GHCR and write the OpenShift pull secret (build-time only, never in the image).
 5. Build the layer with the **repository root as context**, `BASE_IMAGE` set to the previous
    layer's **digest**.
@@ -451,17 +456,22 @@ strips `metacopy` and fails unless `podman info` reports `Native Overlay Diff:tr
 7. Report the layer's size as a `::notice`.
 8. Run the layer's **smoke test inside the built image** (`podman run -i … bash -s <
    smoke-test.sh`); a failure stops the chain before anything is pushed.
-9. Push under every tag and output the image pinned by digest for the next job.
+9. Push under every tag and output the image pinned by digest for the next job. With
+   `also-as` (only `services` sets it, to `ultron-bootc`), push the same tags under that second name
+   too, and warn if its digest differs. Both names carry the rechunked image.
 10. Unregister, even on failure.
 
 Every layer is published under these tags, all naming the same manifest:
 
-| Tag | Meaning |
-|---|---|
-| `<YYYYMMDD>-<sha8>` | immutable: what a node rolls back to, what a mirror keeps |
-| `latest` | the last build |
-| `stable` | the release set: all five layers from one run, mirrored together. `services` is rechunked, so it shares no blobs with the four below it: a mirror of all five stores that content twice, and a node needs only `services` |
-| `4.20` | the MicroShift minor, on `microshift` and `services` only; set from the same line as the build's `USHIFT_VER`, so the tag cannot claim a version it was not built from |
+| Tag | Pushed | Meaning |
+|---|---|---|
+| `<YYYYMMDD>-<sha8>` | every build | immutable: what a node rolls back to, what a mirror keeps |
+| `latest` | builds of `main` only | the last build of `main` |
+| `stable` | builds of `main` only | the release set: all five layers from one run, mirrored together. `services` is rechunked, so it shares no blobs with the four below it: a mirror of all five stores that content twice, and a node needs only `services` |
+
+A branch dispatched to test it gets only the immutable tag, so it never moves what anything
+upgrading follows. The MicroShift version is not a tag; it is `USHIFT_VER` in
+`microshift/Containerfile`, the one place it is set.
 
 ### The ISO (`build-iso.yml`)
 
@@ -474,8 +484,11 @@ Every layer is published under these tags, all naming the same manifest:
 3. Run RHEL's `ksvalidator -v RHEL9` on the rendered kickstart. bib does not parse it, and an
    option anaconda rejects would stop the installer on the device with no visible error.
 4. Run `registry.redhat.io/rhel9/bootc-image-builder --type anaconda-iso` on the `services` image.
-5. Upload `jetson-orin-bootc-microshift-<tag>.iso` and `SHA256SUMS` as the artifact
-   `jetson-orin-bootc-microshift-iso-<tag>`, kept for **7 days**.
+5. Cut the GRUB menu timeout from 60 s to 5 s, in `/EFI/BOOT/grub.cfg` and in the copy inside
+   `images/efiboot.img` (the one UEFI reads). bib's own `menu-timeout` key does nothing for this
+   ISO type.
+6. Upload `ultron-<tag>.iso` alone, no checksum file, as the artifact `ultron-iso-<tag>`, kept
+   for **7 days**.
 
 The installer boots the stock RHEL kernel, not the Tegra one. The eMMC appears as `mmcblk0` only
 if that kernel has the `sdhci-tegra` driver. If the installer finds no disk, check that first
@@ -629,22 +642,22 @@ On a **subscribed RHEL 9 aarch64** host (every layer above `base` needs entitlem
 injects on a registered host), from the repository root:
 
 ```bash
-sudo podman build -f base/Containerfile.base   -t localhost/jetson-orin-bootc-base:dev .
-sudo podman build -f base/Containerfile.podman -t localhost/jetson-orin-bootc-bound-images:dev \
-  --build-arg BASE_IMAGE=localhost/jetson-orin-bootc-base:dev .
+sudo podman build -f base/Containerfile.base   -t localhost/ultron-bootc-base:dev .
+sudo podman build -f base/Containerfile.podman -t localhost/ultron-bootc-bound-images:dev \
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
-sudo podman build -f kiosk/Containerfile       -t localhost/jetson-orin-bootc-kiosk:dev \
+sudo podman build -f kiosk/Containerfile       -t localhost/ultron-bootc-kiosk:dev \
   --secret id=kiosk_password_hash,src=/tmp/kiosk-hash \
-  --build-arg BASE_IMAGE=localhost/jetson-orin-bootc-bound-images:dev .
-sudo podman build -f microshift/Containerfile  -t localhost/jetson-orin-bootc-microshift:dev \
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
+sudo podman build -f microshift/Containerfile  -t localhost/ultron-bootc-microshift:dev \
   --secret id=pullsecret,src=$HOME/pull-secret.json \
-  --build-arg BASE_IMAGE=localhost/jetson-orin-bootc-kiosk:dev .
-sudo podman build -f services/Containerfile    -t localhost/jetson-orin-bootc-services:dev \
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
+sudo podman build -f services/Containerfile    -t localhost/ultron-bootc-services:dev \
   --secret id=pullsecret,src=$HOME/pull-secret.json \
-  --build-arg BASE_IMAGE=localhost/jetson-orin-bootc-microshift:dev .
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 
 # Smoke tests run inside the image, fed on stdin, as CI runs them
-sudo podman run --rm -i localhost/jetson-orin-bootc-services:dev bash -s < services/smoke-test.sh
+sudo podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh
 
 # ISO
 sed -e "s|@JETSON_SSH_PUBKEY@|$(cat ~/.ssh/id_ed25519.pub)|" \
@@ -654,7 +667,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
   -v /tmp/config.toml:/config.toml:ro -v ./output:/output \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   registry.redhat.io/rhel9/bootc-image-builder:latest \
-  --type anaconda-iso --config /config.toml localhost/jetson-orin-bootc-services:dev
+  --type anaconda-iso --config /config.toml localhost/ultron-bootc-services:dev
 # -> output/bootiso/install.iso
 ```
 
@@ -668,7 +681,7 @@ Give every container requests and limits at the house ratios, keep it admissible
 `microshift/crio.conf.d/20-pinned-images.conf`, or the smoke test fails.
 
 **A variant:** create `<name>/` with a `Containerfile` (`FROM` kiosk via `ARG BASE_IMAGE`) and a
-`smoke-test.sh`. Then copy `build-microshift.yml` and point its variant and `iso` jobs at it.
+`smoke-test.sh`. Then copy `ultron.yml` and point its variant job, and the `iso` job's `image-ref`, at it.
 `base`, `bound_images` and `kiosk` are reused unchanged.
 
 ## Not settled yet
@@ -727,5 +740,5 @@ The design record, with every decision and why, is `CLAUDE.md`.
 | `services/smoke-test.sh` | render, admission, resource and image checks |
 | `.github/workflows/build-image.yml` | reusable: build, test and push one layer |
 | `.github/workflows/build-iso.yml` | reusable: build the installer ISO |
-| `.github/workflows/build-microshift.yml` | the pipeline: base → bound-images → kiosk → microshift → services → ISO |
+| `.github/workflows/ultron.yml` | the pipeline: base → bound-images → kiosk → microshift → services → ISO |
 | `CLAUDE.md` | the design record: decisions, rationale, open questions |

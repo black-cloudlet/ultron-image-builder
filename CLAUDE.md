@@ -1,7 +1,8 @@
 # CLAUDE.md — jetson-image-builder
 
 Provisioning and image pipeline for NVIDIA Jetson AGX Orin edge nodes running RHEL image mode
-(bootc) in a disconnected environment. Read this whole file before touching anything.
+(bootc) in a disconnected environment. The project is **Ultron**: images are
+`ultron-bootc-<layer>`, the top one also `ultron-bootc`, the ISO `ultron-<tag>.iso`. Read this whole file before touching anything.
 
 **Two repos.** This one holds the image pipeline (`base/`, `microshift/`, `services/`,
 `.github/workflows/`). The flashing-station tooling (`mirror.sh`, `install-offline.sh`, the
@@ -97,7 +98,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
    runner gives native aarch64 (qemu is not viable), the container gives RHEL's
-   podman/buildah/skopeo, and `subscription-manager register` gives entitlement. Images go to
+   podman, and `subscription-manager register` gives entitlement. Images go to
    GHCR, then into the air-gapped registry by hand. Pattern from
    `redhat-et/edge-ai-image-pipelines` (Apache-2.0). The host's `/mnt` is mounted as
    `/scratch`, with `/var/lib/containers`, `/var/tmp` and the ISO output bound onto it — for
@@ -109,7 +110,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    - `base/Containerfile.base` republishes the pinned vendor image under our name, plus field
      tools (`tcpdump` and the like).
    - `base/Containerfile.podman` adds the physically-bound-images machinery and `jtop`.
-     Published as `jetson-orin-bootc-bound-images` from CI job `bound_images` (an underscore:
+     Published as `ultron-bootc-bound-images` from CI job `bound_images` (an underscore:
      `needs.bound-images` parses as a subtraction and resolves to nothing).
    - `kiosk/` adds GDM, GNOME Kiosk's script session, Firefox and the `kiosk` user. Shared,
      below the variant: nothing in it is about the cluster, so a service change never reinstalls
@@ -120,8 +121,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
      with every image they name embedded.
    Service images sit **above** the variant layer so changing one does not re-run the
    MicroShift install and re-pull its nine images. Each layer is pushed as
-   `jetson-orin-bootc-<name>` and the next builds on its **digest**. CI is two reusable
-   workflows (`build-image.yml`, `build-iso.yml`) plus `build-microshift.yml`, chaining base →
+   `ultron-bootc-<name>` and the next builds on its **digest**. CI is two reusable
+   workflows (`build-image.yml`, `build-iso.yml`) plus `ultron.yml`, chaining base →
    bound-images → kiosk → microshift → services → ISO. The build context is the repo root. Every
    layer registers with subscription-manager, even the one that installs nothing: one code path.
 8. **NVIDIA BSP download stays manual** (documented in `README.md`). Scripting it was fragile.
@@ -468,7 +469,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   40 GiB xfs root, **no swap**, and **~16.5 GiB left free for LVMS** (fill the VG and the
   cluster has no dynamic PVs). Root locked; user `cloudlet` in `wheel` from
   `@JETSON_SSH_PUBKEY@`/`@JETSON_PASSWORD_HASH@`; `reboot --eject`. ISO label
-  `JETSON_ORIN_BOOTC`. Address and hostname are baked in, so two devices from
+  `ULTRON`. Address and hostname are baked in, so two devices from
   one ISO collide. No `%post`: the extra API SAN and the `/etc/hosts` entry were removed, so
   the laptop reaches 6443 through an SSH tunnel with the loopback kubeconfig.
 - **Node IP on `lo`** (`microshift/stable-microshift.nmconnection`,
@@ -487,15 +488,21 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `/run/NetworkManager/no-stub-resolv.conf`. Unverified on hardware.
 - `.github/workflows/build-image.yml` — **reusable**: register, bind storage for native
   overlay, write the pull secret, build, run the smoke test inside the result, push
-  `ghcr.io/<owner>/jetson-orin-bootc-<name>`, output the digest-pinned ref, and report the
-  layer size as a `::notice`. Tags: `<YYYYMMDD-sha8>`, `latest`, and `extra-tags` (`stable`
-  on all five layers; `4.20` on the two with MicroShift, passed from the same lines as
-  `USHIFT_VER` so the tag cannot lie). Tags are validated before the build.
+  `ghcr.io/<owner>/ultron-bootc-<name>`, output the digest-pinned ref, and report the
+  layer size as a `::notice`. Tags: `<YYYYMMDD-sha8>` on every build; `latest` and `stable`
+  only when `GITHUB_REF` is `refs/heads/main` (the caller's ref), so dispatching a branch to
+  test it moves neither. No MicroShift-version tag: `USHIFT_VER` is set once, as the
+  Containerfile's `ARG` default. The `also-as` name is validated before the build. `also-as` pushes
+  the same tags under a second name: `services` is also `ghcr.io/<owner>/ultron-bootc`, the finished
+  OS under the project's name. Its digest should equal the first (same compressed layers); a
+  mismatch is a `::warning`, not a failure, since nothing builds on it. The ISO and the chain
+  use `ultron-bootc-services`.
   `rechunk: true` (services only) runs `bootc-base-imagectl rechunk` between build and smoke
   test, inside the image it rewrites (that is where the tool and `rpm-ostree` are), with the
   builder's store and `storage.conf` mounted in; it wraps `rpm-ostree experimental compose
   build-chunked-oci --bootc --format-version=1`. Tags move onto the result, which must pass
-  `bootc container lint`; layer count is a `::notice`, per-layer sizes go to the log. Why:
+  `bootc container lint`, so the push, `also-as` included, carries the rechunked image; layer
+  count is a `::notice`, per-layer sizes go to the log. Why:
   a plain build stamps every layer with the build's mtimes, so an unchanged rebuild gets new
   digests and a node or mirror re-fetches everything. Rechunked, `services` shares no blobs
   with the layers below. Run 36 went green end to end, ISO included: ~6.5 min nested in the UBI
@@ -522,7 +529,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   implanted md5, so "Test this media" cannot verify the stick; unused, not restored. Upload
   the `*.iso` alone (no checksum file) at zip `compression-level: 9`, the maintainer's call; it is
   mostly gzip'd layers and squashfs, so the saving is small and the upload slower.
-- `.github/workflows/build-microshift.yml` — the only caller, on push to `main` under
+- `.github/workflows/ultron.yml` — the only caller, on push to `main` under
   `base/**`, `kiosk/**`, `microshift/**`, `services/**`, `config.toml` or the workflows, and on
   `workflow_dispatch`. **Nothing runs on a pull request.**
 
@@ -543,7 +550,7 @@ hardware.
 
 ## Next step: validate on hardware, then the app services
 
-1. Dispatch `build-microshift.yml`, `dd` the ISO, boot the devkit (QSPI from R36.5.x). Check
+1. Dispatch `ultron.yml`, `dd` the ISO, boot the devkit (QSPI from R36.5.x). Check
    `bootc status` (expect a digest-pinned GHCR origin, which cannot upgrade), `lsmod | grep
    nvgpu`, `nvidia-ctk cdi list` → `nvidia.com/gpu=all`, a GPU container, `systemctl
    is-enabled bootc-fetch-apply-updates.timer`, whether `jtop` works, and that
@@ -599,7 +606,8 @@ hardware.
 layer above `services/`; what External Secrets reads from; NVMe before real apps land;
 registration vs. a self-hosted runner; per-device address and hostname before a second node;
 how `/etc/flightctl/config.yaml` reaches a node, and greenboot; `bootc switch` vs. retag for the
-node's origin, and whether `stable` moves on every green build or only after a hardware boot;
+node's origin, and whether `stable` should wait for a hardware boot (today it moves on every green build of
+`main`);
 lowering kubelet's image GC thresholds below the eviction line (only matters once images are
 pulled); whether the `services/` resource sizes survive hardware (the ratios are enforced, the
 sizes are guesses); the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
@@ -671,7 +679,7 @@ the frontend's video codec, preview size and on-screen keyboard.
 
 **Git / delivery.** Develop on the session's branch, commit with a message that says *why*,
 push, and open a PR only when asked. Always state which files changed. Nothing runs CI on a PR,
-so a branch is validated by dispatching `build-microshift.yml` against it; a claim that
+so a branch is validated by dispatching `ultron.yml` against it; a claim that
 something is tested should say whether that means locally or dispatched.
 
 ## Quick reference
@@ -689,21 +697,21 @@ cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi ext
 
 # Local image build on a subscribed RHEL 9 aarch64 box, from the repo root. Each layer FROM the
 # one before it; the workflow passes BASE_IMAGE as a digest.
-sudo podman build -f base/Containerfile.base     -t localhost/jetson-base:dev .
-sudo podman build -f base/Containerfile.podman   -t localhost/jetson-podman:dev \
-    --build-arg BASE_IMAGE=localhost/jetson-base:dev .
+sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev .
+sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
-sudo podman build -f kiosk/Containerfile         -t localhost/jetson-kiosk:dev \
+sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \
     --secret id=kiosk_password_hash,src=/tmp/kiosk-hash \
-    --build-arg BASE_IMAGE=localhost/jetson-podman:dev .
-sudo podman build -f microshift/Containerfile    -t localhost/jetson-microshift:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
+sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
-    --build-arg BASE_IMAGE=localhost/jetson-kiosk:dev .
-sudo podman build -f services/Containerfile      -t localhost/jetson-orin-bootc:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
+sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
-    --build-arg BASE_IMAGE=localhost/jetson-microshift:dev .
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 # Smoke tests are fed on stdin, the same way the workflow runs them
-podman run --rm -i localhost/jetson-orin-bootc:dev bash -s < services/smoke-test.sh
+podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh
 
 # ISO from the top of the chain
 sed -e "s|@JETSON_SSH_PUBKEY@|$(cat ~/.ssh/id_ed25519.pub)|" \
@@ -713,7 +721,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
   -v /tmp/config.toml:/config.toml:ro -v ./output:/output \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   registry.redhat.io/rhel9/bootc-image-builder:latest \
-  --type anaconda-iso --config /config.toml localhost/jetson-orin-bootc:dev
+  --type anaconda-iso --config /config.toml localhost/ultron-bootc-services:dev
 # -> output/bootiso/install.iso
 
 # On the device

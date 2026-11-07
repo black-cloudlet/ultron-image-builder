@@ -1,7 +1,7 @@
 # Layer 3, shared: Firefox fullscreen on the DisplayPort output, Red Hat's
 # documented kiosk (GDM login, GNOME Kiosk's script session). Below the
 # variant: nothing here is about the cluster.
-ARG BASE_IMAGE=ghcr.io/black-cloudlet/jetson-orin-bootc-bound-images:latest
+ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-bootc-bound-images:latest
 FROM ${BASE_IMAGE} AS kiosk
 
 # The kiosk password's hash, root-only, for sysusers. Checked before dnf.

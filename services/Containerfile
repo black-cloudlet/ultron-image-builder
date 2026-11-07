@@ -1,6 +1,6 @@
 # Layer 5, microshift variant: what runs on the cluster. Above the variant
 # layer, so a service changing does not re-run the MicroShift install.
-ARG BASE_IMAGE=ghcr.io/black-cloudlet/jetson-orin-bootc-microshift:latest
+ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-bootc-microshift:latest
 FROM ${BASE_IMAGE}
 
 # Numbered: MicroShift sorts manifests.d and applies each root in turn, and

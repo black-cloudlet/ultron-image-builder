@@ -2,7 +2,7 @@
 # builds on the previous one's digest, so a change to a service image does not
 # re-pull MicroShift's control plane and vice versa. The ISO is built from the
 # top of the chain, which is services, not microshift.
-name: microshift image + installer ISO
+name: ultron images + installer ISO
 
 on:
   push:
@@ -13,22 +13,19 @@ on:
       - microshift/**
       - services/**
       - config.toml
-      - .github/workflows/build-microshift.yml
+      - .github/workflows/ultron.yml
       - .github/workflows/build-image.yml
       - .github/workflows/build-iso.yml
   workflow_dispatch:
 
 jobs:
   # The pinned vendor image, republished. Shared by every variant.
-  # `stable` on every layer so the five images can be mirrored as one set; the
-  # OpenShift version tag goes only on the layers that contain MicroShift.
   base:
     uses: ./.github/workflows/build-image.yml
     with:
       name: base
       containerfile: base/Containerfile.base
       smoke-test: base/smoke-test.base.sh
-      extra-tags: stable
     secrets: inherit
     permissions: { contents: read, packages: write }
 
@@ -44,7 +41,6 @@ jobs:
       containerfile: base/Containerfile.podman
       smoke-test: base/smoke-test.podman.sh
       build-args: BASE_IMAGE=${{ needs.base.outputs.image-ref }}
-      extra-tags: stable
     secrets: inherit
     permissions: { contents: read, packages: write }
 
@@ -58,14 +54,9 @@ jobs:
       containerfile: kiosk/Containerfile
       smoke-test: kiosk/smoke-test.sh
       build-args: BASE_IMAGE=${{ needs.bound_images.outputs.image-ref }}
-      extra-tags: stable
     secrets: inherit
     permissions: { contents: read, packages: write }
 
-  # USHIFT_VER is passed to the build and used as a tag from the same two lines:
-  # a 4.20 tag on an image built from another channel would be a claim nothing
-  # enforces. The env context is not available to a reusable workflow's `with:`,
-  # so it is written twice rather than once — keep them together.
   microshift:
     needs: kiosk
     uses: ./.github/workflows/build-image.yml
@@ -73,10 +64,7 @@ jobs:
       name: microshift
       containerfile: microshift/Containerfile
       smoke-test: microshift/smoke-test.sh
-      build-args: |
-        BASE_IMAGE=${{ needs.kiosk.outputs.image-ref }}
-        USHIFT_VER=4.20
-      extra-tags: stable 4.20
+      build-args: BASE_IMAGE=${{ needs.kiosk.outputs.image-ref }}
     secrets: inherit
     permissions: { contents: read, packages: write }
 
@@ -91,9 +79,9 @@ jobs:
       containerfile: services/Containerfile
       smoke-test: services/smoke-test.sh
       build-args: BASE_IMAGE=${{ needs.microshift.outputs.image-ref }}
-      # Built FROM the microshift layer, so it carries that MicroShift version
-      # too — and this is the image a node actually boots and upgrades.
-      extra-tags: stable 4.20
+      # The image a node actually boots and upgrades, so it is also published
+      # under the project's name without a layer suffix.
+      also-as: ultron-bootc
       # Only this layer: it is what a node downloads, and the split is redone
       # from the whole tree whatever the layers below look like.
       rechunk: true
@@ -108,7 +96,6 @@ jobs:
     with:
       image-ref: ${{ needs.services.outputs.image-ref }}
       config: config.toml
-      name: microshift
       tag: ${{ needs.services.outputs.tag }}
     secrets: inherit
     permissions: { contents: read, packages: read }
