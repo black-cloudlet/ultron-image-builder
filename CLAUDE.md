@@ -429,10 +429,10 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
       `genericTargets.enabled`): an ExternalSecret may write a ConfigMap. Needs ESO ≥ v1.0
       (`target.manifest`); the flag without the role is an error in every namespace.
     - No external store yet, so what it reads from is unsettled.
-  - `025-device-ca-bundle/` — ConfigMap `device-ca.crt` (key `ca.crt`) in every namespace, in
-    the shape of `kube-root-ca.crt`. **Two hops**, because ESO's Kubernetes provider reads a
-    Secret whole and a `ClusterSecretStore` can be named from any namespace: one able to read
-    `device-ca` would hand anyone with ExternalSecret rights `tls.key`.
+  - `025-device-ca-bundle/` — ConfigMap `ca-bundle` (key `ca.crt`) in every namespace. **Two
+    hops**, because ESO's Kubernetes provider reads a Secret whole and a `ClusterSecretStore` can
+    be named from any namespace: one able to read `device-ca` would hand anyone with
+    ExternalSecret rights `tls.key`.
     - `public-copy.yaml`: in `cert-manager`, SA + Role (`get`, `resourceNames: [device-ca]`) +
       namespaced `SecretStore` + ExternalSecret copying `tls.crt` (not `ca.crt`: that becomes an
       org root if one ever signs this CA) to Secret `device-ca-public`.
@@ -593,7 +593,7 @@ hardware.
    should be `restricted-v2`.
    Device CA: `oc get certificate,clusterissuer -A` Ready; `oc get secret -n cert-manager
    device-ca-public -o jsonpath='{.data}'` has `ca.crt` only; `oc get cm -A
-   --field-selector metadata.name=device-ca.crt` lists every namespace, and a new namespace
+   --field-selector metadata.name=ca-bundle` lists every namespace, and a new namespace
    gets one within a minute; `oc get clustersecretstore,secretstore -A` Valid (proves
    `system:basic-user` and `kube-root-ca.crt` hold on MicroShift); a leaf from `device-ca`
    verifies with `openssl verify -CAfile` against the ConfigMap. `oc auth can-i get
@@ -629,7 +629,7 @@ hardware.
 **Open decisions** (confirm with the maintainer first): who may get certificates from
 `device-ca` (upstream aggregates `Certificate` create into every namespace's admin/edit, so an
 `isCA` sub-CA too; approver-policy or `nameConstraints` would bound it), and whether
-`device-ca.crt` belongs in every namespace or only labelled ones; the Triton `-igpu` tag for
+`ca-bundle` belongs in every namespace or only labelled ones; the Triton `-igpu` tag for
 JetPack 6.2.2 and the 8Gi slice size; where InferenceServices live, and whether models get their
 own layer above `services/`; what External Secrets reads from; NVMe before real apps land;
 registration vs. a self-hosted runner; per-device address and hostname before a second node;

@@ -65,7 +65,7 @@ spec:
       kind: ClusterSecretStore
       name: device-ca-bundle
     target:
-      name: device-ca.crt
+      name: ca-bundle
       creationPolicy: Owner
       manifest:
         apiVersion: v1

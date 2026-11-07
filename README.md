@@ -298,7 +298,7 @@ uses.
 | `010-cert-manager` | cert-manager v1.21.2 | Issues KServe's webhook serving certificates (self-signed issuer, no ACME) | `cert-manager` | 3 |
 | `015-device-ca` | cert-manager objects | The node's own CA, generated on the node, and ClusterIssuer `device-ca` signing with it | `cert-manager` | 0 |
 | `020-external-secrets` | External Secrets v1.2.0 | Syncs secrets from a store; may write ConfigMaps too. **No external store configured yet** | `external-secrets-operator` (moved off `default`) | 3 |
-| `025-device-ca-bundle` | External Secrets objects | Copies the CA certificate (never its key) into ConfigMap `device-ca.crt` in every namespace | `cert-manager`, then every namespace | 0 |
+| `025-device-ca-bundle` | External Secrets objects | Copies the CA certificate (never its key) into ConfigMap `ca-bundle` in every namespace | `cert-manager`, then every namespace | 0 |
 | `030-kserve` | KServe v0.20.0, Standard (raw Deployment) mode | Turns an `InferenceService` into a model-serving Deployment + Service | `kserve` | 1 |
 | `040-triton-runtime` | NVIDIA Triton (`25.02-py3-igpu`) | The `ClusterServingRuntime` every InferenceService uses: TensorRT and ONNX models on the iGPU | cluster-scoped | one per InferenceService |
 
@@ -325,8 +325,8 @@ have different CAs. It survives reboots and OS upgrades, and is replaced by
 - `015`: a self-signed `Issuer` signs the CA `Certificate` (`isCA`, ECDSA P-256, ten years, key
   kept on renewal), and `ClusterIssuer` **`device-ca`** signs with it. Any namespace gets a
   certificate from it with `issuerRef: {kind: ClusterIssuer, name: device-ca}`.
-- `025`: every namespace gets ConfigMap **`device-ca.crt`**, key `ca.crt`, next to the
-  `kube-root-ca.crt` already there. Mount it to trust certificates `device-ca` issued.
+- `025`: every namespace gets ConfigMap **`ca-bundle`**, key `ca.crt`. Mount it to trust
+  certificates `device-ca` issued.
 - The CA Secret holds the private key, and External Secrets reads a Secret whole, so `025` is two
   hops. In `cert-manager`, a namespaced `SecretStore` that alone may read `device-ca` copies its
   certificate into Secret `device-ca-public`. A `ClusterSecretStore` whose account may read
