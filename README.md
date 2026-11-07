@@ -389,10 +389,6 @@ render to JSON and queries it with `jq`, then checks:
 - the workload set in each root;
 - External Secrets: no `runAsUser`, `runAsNonRoot` everywhere, and `default` named nowhere
   outside its CRDs;
-- the device CA: self-signed, in cert-manager's cluster resource namespace, and used by a
-  ClusterIssuer; its Secret read only by name, one certificate field at a time, through a
-  namespaced store, never by an account a `ClusterSecretStore` uses; the `ClusterExternalSecret`
-  reading only the public copy; and generic targets switched on in `020`;
 - the three `inferenceservice-config` values;
 - every pod template and serving-runtime container admissible under `restricted-v2`: no fixed
   UID/GID/`fsGroup`, no host access or privilege, all capabilities dropped, `runAsNonRoot` and

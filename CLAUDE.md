@@ -484,11 +484,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   serving-runtime container admissible under restricted-v2; requests, limits and ratios; no
   container whose pull policy is, or defaults to, `Always`; every image qualified and embedded;
   every `mapping.txt` reference pinned by `crio config`; no `ClusterStorageContainer`; one
-  KServe tag; the device CA self-signed, in the cluster resource namespace, used by a
-  ClusterIssuer; its Secret read only by name, by `property` `tls.crt`/`ca.crt`, through a
-  namespaced store in its namespace, never by an account a `ClusterSecretStore` uses; the
-  `ClusterExternalSecret`'s keys granted by name and written by an ExternalSecret; generic
-  targets flag + role in `020`. It prints `du -sh` of the cache, which the eMMC pays for twice
+  KServe tag. It prints `du -sh` of the cache, which the eMMC pays for twice
   (`/usr` and containers-storage). Pods KServe builds at run time are in no render: their
   admission and GPU access are hardware questions.
 - `config.toml` — project-wide bib config with a **custom kickstart** (bib then adds only
