@@ -1,0 +1,5 @@
+# The login screen's logo, in place of Red Hat's: that one is only a schema
+# default (gdm's org.gnome.login-screen.gschema.override), which any value in
+# GDM's dconf databases overrides.
+[org/gnome/login-screen]
+logo='/usr/share/jetson-kiosk/login-logo.png'

@@ -1,8 +1,8 @@
 # Layer 3, shared: Firefox fullscreen on the DisplayPort output, Red Hat's
 # documented kiosk (GDM login, GNOME Kiosk's script session). Below the
 # variant: nothing here is about the cluster.
-ARG BASE_IMAGE=ghcr.io/black-cloudlet/jetson-orin-bootc-bound-images:latest
-FROM ${BASE_IMAGE}
+ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-bootc-bound-images:latest
+FROM ${BASE_IMAGE} AS kiosk
 
 # The kiosk password's hash, root-only, for sysusers. Checked before dnf.
 RUN --mount=type=secret,id=kiosk_password_hash \
@@ -22,6 +22,38 @@ RUN dnf install -y gdm gnome-kiosk-script-session firefox dejavu-sans-fonts && \
     systemctl set-default graphical.target && \
     dnf clean all
 
+# GNOME 40 has no setting for the login screen's background: it is a rule in
+# GNOME Shell's compiled theme. Rebuilt in a throwaway stage, so glib2-devel
+# (gresource, glib-compile-resources) stays out of the image.
+FROM kiosk AS shell-theme
+COPY kiosk/shell-theme.sh kiosk/login-background.css /tmp/shell-theme/
+RUN dnf install -y glib2-devel && \
+    bash /tmp/shell-theme/shell-theme.sh /tmp/shell-theme/login-background.css \
+        /tmp/shell-theme/gnome-shell-theme.gresource
+
+FROM kiosk
+COPY --from=shell-theme /tmp/shell-theme/gnome-shell-theme.gresource \
+     /usr/share/gnome-shell/gnome-shell-theme.gresource
+
+# NVIDIA's EGL is outside the loader path; without it mutter gets Mesa's EGL
+# and refuses the GPU.
+RUN test -f /usr/lib64/tegra-egl/ld.so.conf || { echo "no /usr/lib64/tegra-egl/ld.so.conf"; exit 1; } && \
+    ln -s /usr/lib64/tegra-egl/ld.so.conf /etc/ld.so.conf.d/nvidia-tegra-egl.conf && \
+    ldconfig
+
+# GDM's rule forces X on NVIDIA without nvidia-sleep.sh, which Tegra has not.
+RUN test -f /usr/lib/udev/rules.d/61-gdm.rules || { echo "no /usr/lib/udev/rules.d/61-gdm.rules to mask"; exit 1; } && \
+    ln -s /dev/null /etc/udev/rules.d/61-gdm.rules
+
+COPY kiosk/gdm-nvidia-relabel.conf /usr/lib/systemd/system/gdm.service.d/50-jetson-nvidia.conf
+# Named after the file. -n: the build container has no policy to reload.
+COPY kiosk/jetson-gpu.cil /usr/share/selinux/packages/jetson-gpu.cil
+RUN semodule -n -i /usr/share/selinux/packages/jetson-gpu.cil
+
+# A node that suspends stops MicroShift until a key is pressed; GNOME's login
+# screen may suspend on idle. Masked for every caller, not only GNOME.
+RUN systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+
 # The login screen's session menu offers every file here, and gdm pulls in
 # GNOME Shell's: a full desktop for whoever has the kiosk password. Keep only
 # the kiosk session (RHEL 9 names it gnome-kiosk-script, no -wayland).
@@ -37,6 +69,13 @@ COPY kiosk/sysusers-credential.conf \
      /usr/lib/systemd/system/systemd-sysusers.service.d/50-jetson-kiosk.conf
 COPY kiosk/tmpfiles.conf /usr/lib/tmpfiles.d/jetson-kiosk.conf
 COPY --chmod=0555 kiosk/gnome-kiosk-script /usr/libexec/jetson-kiosk/gnome-kiosk-script
+
+# The login screen's logo, background and kiosk's picture. dconf update
+# compiles /etc/dconf/db/gdm, the only form the greeter reads.
+COPY --chmod=0644 kiosk/login-logo.png kiosk/login-background.png kiosk/avatar.png \
+     /usr/share/jetson-kiosk/
+COPY kiosk/gdm-logo.dconf /etc/dconf/db/gdm.d/10-jetson-kiosk-logo
+RUN dconf update
 
 # No autologin. The kiosk password opens neither ssh nor a console; GDM uses
 # gdm-password, not login.

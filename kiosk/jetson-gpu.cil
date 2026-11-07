@@ -1,0 +1,5 @@
+; NVIDIA's Tegra GPU nodes have no file context, so they are device_t, which
+; the login screen (xdm_t) may not open. dri_device_t is what it may.
+(filecon "/dev/nvmap" char (system_u object_r dri_device_t ((s0) (s0))))
+(filecon "/dev/nvhost-.*" char (system_u object_r dri_device_t ((s0) (s0))))
+(filecon "/dev/nvgpu/.*" char (system_u object_r dri_device_t ((s0) (s0))))

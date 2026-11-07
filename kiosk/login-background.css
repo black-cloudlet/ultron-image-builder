@@ -1,0 +1,9 @@
+/* Appended to GNOME Shell's gnome-shell.css by kiosk/shell-theme.sh: the login
+   screen's background. Last in the file, so it wins over the theme's own
+   #lockDialogGroup rule. */
+#lockDialogGroup {
+  background: #0d0f0e url(file:///usr/share/jetson-kiosk/login-background.png);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center;
+}

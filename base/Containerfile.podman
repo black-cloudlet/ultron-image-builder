@@ -1,16 +1,28 @@
 # Layer 2, shared: embedding machinery, jtop, Edge Manager agent. The images it
 # replays are embedded by the layers above — never here, where every variant pays.
-ARG BASE_IMAGE=ghcr.io/black-cloudlet/jetson-orin-bootc-base:latest
+ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-bootc-base:latest
 FROM ${BASE_IMAGE}
 
 # --prefix=/usr: /usr/local is machine state on bootc and would not survive.
+# --only-binary: the sdist's setup.py would install the unit and group itself.
 ARG JTOP_VER=7.2.1
 RUN dnf install -y python3 python3-pip && \
-    pip3 install --prefix=/usr --no-cache-dir "jetson-stats==${JTOP_VER}" && \
+    pip3 install --prefix=/usr --no-cache-dir --only-binary=:all: \
+        "jetson-stats==${JTOP_VER}" && \
     dnf clean all
 
 # The group jetson-stats grants jtop access through.
 RUN groupadd -r jtop
+
+# The wheel's unit template runs /usr/local/bin/jtop; root's first jtop installs it
+# as is, and it never started (seen on hardware). Fix the path, and put the unit
+# where jtop looks, so it never installs its own.
+RUN unit=/usr/share/jetson_stats/jtop.service; \
+    grep -q '^ExecStart=/usr/local/bin/jtop ' "$unit" || \
+        { echo "unexpected ExecStart in $unit:"; grep ExecStart "$unit"; exit 1; }; \
+    sed -i 's|^ExecStart=/usr/local/bin/jtop |ExecStart=/usr/bin/jtop |' "$unit" && \
+    cp "$unit" /etc/systemd/system/jtop.service && \
+    systemctl enable jtop.service
 
 # From redhat-et/edge-ai-image-pipelines (Apache-2.0). The cache is a plain
 # directory, not an additional store: images pulled later would reuse its

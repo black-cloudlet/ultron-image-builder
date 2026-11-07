@@ -1,7 +1,8 @@
 # CLAUDE.md — jetson-image-builder
 
 Provisioning and image pipeline for NVIDIA Jetson AGX Orin edge nodes running RHEL image mode
-(bootc) in a disconnected environment. Read this whole file before touching anything.
+(bootc) in a disconnected environment. The project is **Ultron**: images are
+`ultron-bootc-<layer>`, the top one also `ultron-bootc`, the ISO `ultron-<tag>.iso`. Read this whole file before touching anything.
 
 **Two repos.** This one holds the image pipeline (`base/`, `microshift/`, `services/`,
 `.github/workflows/`). The flashing-station tooling (`mirror.sh`, `install-offline.sh`, the
@@ -93,7 +94,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
    runner gives native aarch64 (qemu is not viable), the container gives RHEL's
-   podman/buildah/skopeo, and `subscription-manager register` gives entitlement. Images go to
+   podman, and `subscription-manager register` gives entitlement. Images go to
    GHCR, then into the air-gapped registry by hand. Pattern from
    `redhat-et/edge-ai-image-pipelines` (Apache-2.0). The host's `/mnt` is mounted as
    `/scratch`, with `/var/lib/containers`, `/var/tmp` and the ISO output bound onto it — for
@@ -105,7 +106,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    - `base/Containerfile.base` republishes the pinned vendor image under our name, plus field
      tools (`tcpdump` and the like).
    - `base/Containerfile.podman` adds the physically-bound-images machinery and `jtop`.
-     Published as `jetson-orin-bootc-bound-images` from CI job `bound_images` (an underscore:
+     Published as `ultron-bootc-bound-images` from CI job `bound_images` (an underscore:
      `needs.bound-images` parses as a subtraction and resolves to nothing).
    - `kiosk/` adds GDM, GNOME Kiosk's script session, Firefox and the `kiosk` user. Shared,
      below the variant: nothing in it is about the cluster, so a service change never reinstalls
@@ -116,8 +117,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
      with every image they name embedded.
    Service images sit **above** the variant layer so changing one does not re-run the
    MicroShift install and re-pull its nine images. Each layer is pushed as
-   `jetson-orin-bootc-<name>` and the next builds on its **digest**. CI is two reusable
-   workflows (`build-image.yml`, `build-iso.yml`) plus `build-microshift.yml`, chaining base →
+   `ultron-bootc-<name>` and the next builds on its **digest**. CI is two reusable
+   workflows (`build-image.yml`, `build-iso.yml`) plus `ultron.yml`, chaining base →
    bound-images → kiosk → microshift → services → ISO. The build context is the repo root. Every
    layer registers with subscription-manager, even the one that installs nothing: one code path.
 8. **NVIDIA BSP download stays manual** (documented in `README.md`). Scripting it was fragile.
@@ -134,7 +135,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
 - `install-offline.sh` — **as root on the station**: extracts to `/srv/repos/{baseos,appstream}`,
   writes `offline.repo` (`file://`, `gpgcheck=1`), disables the subscription-manager plugin,
   installs `dtc cpp binutils usbutils lz4` (`-P` skips). Repos only.
-- `README.md` — BSP links, extract, recovery mode, `flash.sh`.
+- `README.md` — BSP links, extract, recovery mode, `flash.sh`, then UEFI's display hand-off
+  to Never (the kiosk monitor stays black otherwise).
 
 Both are idempotent and have been run end to end: station provisioned, devkit QSPI flashed.
 
@@ -152,8 +154,15 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
     from `base/physically-bound-images/`.
   - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr` (`/usr/local`
-    is machine state on bootc). `python3-pip` comes from RHEL repos, so this layer needs
-    entitlement. Whether `jtop` reaches the driver as installed is unverified.
+    is machine state on bootc) `--only-binary=:all:` (the sdist's `setup.py` would install the
+    unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so this layer needs
+    entitlement. `jtop` is a client of `jtop.service` (`/run/jtop.sock`). The wheel ships
+    the unit only as a template (`/usr/share/jetson_stats/`) saying `/usr/local/bin/jtop`, and
+    root's first `jtop` copies it into `/etc/systemd/system` when none is there: on hardware
+    that unit sat in `activating` forever. The build fixes the template's path and installs it
+    as `/etc/systemd/system/jtop.service`, enabled: in `/etc` because that is the path jtop
+    checks (a symlink there to `/usr/lib` is `bad` to systemd). The smoke test fails unless the
+    unit's `ExecStart` binary is executable. Whether `jtop` reaches the driver is unverified.
   - `flightctl-agent` from `rhacm-${ACM_VER}-for-rhel-9-$(uname -m)-rpms`
     (`ACM_VER=2.15`, match the hub), no weak deps. Drop-ins key both
     the agent and `bootc-fetch-apply-updates.service` on `/etc/flightctl/config.yaml`: agent
@@ -191,8 +200,10 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     would delete it. So no `registries.conf` mirror for a pinned registry, and air-gapped app
     layers embed from `<registry>/embedded/*`, pull from `<registry>/apps/*`. Both smoke tests
     check every `mapping.txt` reference against `crio config`. GC thresholds are untouched.
-- `kiosk/Containerfile` — **written, built by nothing yet, unverified on hardware.** Red Hat's
-  documented kiosk, kept deliberately plain: `dnf install gdm gnome-kiosk-script-session firefox
+- `kiosk/Containerfile` — **its display fixes were found on hardware by hand (jetson-1,
+  2026-11); the image with them is unbuilt.** Red Hat's
+  documented kiosk, kept deliberately plain, plus fixes for gaps in the vendor image (below):
+  `dnf install gdm gnome-kiosk-script-session firefox
   dejavu-sans-fonts` (DejaVu covers Hebrew), `systemctl enable gdm`, `set-default
   graphical.target`. **No autologin**: GDM's login screen asks for `kiosk`'s password (the
   maintainer's call). The password is **in the image**, not the kickstart (the maintainer's
@@ -215,7 +226,8 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   through it. `/usr/share/polkit-1/rules.d/10-jetson-kiosk.rules` answers NO to every polkit
   action for `kiosk` (an active local session may otherwise reboot, change system network
   settings, `pkexec`); `10-` so it is the first rule by name across `/etc` and `/usr/share`,
-  which is the order polkit asks them in. `kiosk` is in no group but its own, so no `sudo`.
+  which is the order polkit asks them in. `kiosk` is in its own group and `video` (the GPU
+  nodes, below), so no `sudo`.
   Not done: a confined SELinux user (`user_u`, `user_exec_content` off) would also stop it
   running what it downloads, but whether a confined user can open the Tegra display and GPU
   nodes is unknown, and `kiosk` exists only from first boot; revisit after hardware. Code
@@ -225,7 +237,29 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `/usr/libexec/jetson-kiosk/gnome-kiosk-script`, writes
   `/var/lib/AccountsService/users/kiosk` with `Session=gnome-kiosk-script`, and marks
   `cloudlet` `SystemAccount=true` so the login screen lists only `kiosk`: all `/var`, which the
-  image does not deploy. The build deletes every other session file: GDM pulls in GNOME Shell's
+  image does not deploy. Still one tap (or Enter) on `kiosk` before the password: GNOME Shell
+  40's greeter never selects a lone user itself (`loginDialog.js`), and `disable-user-list`
+  asks for a username instead; skipping it needs greeter code. **Branding**:
+  `kiosk/login-logo.png` replaces Red Hat's logo through `/etc/dconf/db/gdm.d/10-jetson-kiosk-logo`
+  and a build-time `dconf update` (Red Hat's is only a schema default, gdm's
+  `org.gnome.login-screen.gschema.override`; drawn at the file's own pixel size), and
+  `kiosk/avatar.png` is `kiosk`'s picture via `Icon=` in the AccountsService file; both land in
+  `/usr/share/jetson-kiosk/`, PNG only. Both come from `cloudlet-logo-light-bg.svg` (not in
+  the repo): the logo with the wordmark recoloured `#FFFFFF`/`#C9D1CF` for the greeter's dark
+  grey (the original's near-black text vanished there), padding trimmed, 56 px tall. The avatar
+  is the unit emblem (a 1920² PNG with transparent corners) at 236 px on a white 256×256
+  square: full size, its black ring sat on GNOME's circle crop and met the dark grey.
+  **Background** (the maintainer's request; the one package file this layer rewrites): GNOME 40
+  has no setting for it, only the theme's `#lockDialogGroup { background-color: #282828 }`
+  inside `/usr/share/gnome-shell/gnome-shell-theme.gresource`. A throwaway `shell-theme` stage
+  (`FROM kiosk`, installs `glib2-devel` for `gresource`/`glib-compile-resources`) runs
+  `kiosk/shell-theme.sh`: extracts every file, appends `kiosk/login-background.css` to
+  `gnome-shell.css` (last, so it wins), recompiles uncompressed, and fails unless the stock CSS
+  has `#lockDialogGroup`, the file list is unchanged and the CSS ends with ours; the final stage
+  `COPY --from`s only the result. `rpm -V gnome-shell` flags the file. `kiosk/login-background.png`
+  is the maintainer's 1920×1080 brand backdrop with its centre cloud and `CLOUDLET | MAMRAM`
+  removed (masked against a 61 px median and filled harmonically, so the glows' bands survive):
+  the user list sits in the centre and the logo at the bottom. `background-size: cover`. The build deletes every other session file: GDM pulls in GNOME Shell's
   (`gnome.desktop`, `gnome-wayland.desktop`), which the login screen's session menu would offer
   as a full desktop. RHEL 9's kiosk session is `gnome-kiosk-script`, not the newer
   `gnome-kiosk-script-wayland`: the first dispatch (run 40) failed on exactly that. The package
@@ -242,10 +276,38 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   - **The vendor image has the display stack** (inspected 2026-10-21): `nvidia.ko`,
     `nvidia-modeset.ko`, `nvidia-drm.ko` under `updates/opensrc-disp/`, `nvidia-drm modeset=1
     fbdev=1`, NVIDIA's EGL vendor file, `libnvidia-egl-gbm`, `libnvidia-egl-wayland`,
-    `gbm/nvidia-drm_gbm.so`, and an Xorg `nvidia_drv.so` with no X server.
-    `load-nvidia-drm.service` is `WantedBy=graphical.target` and the vendor sets
+    `gbm/nvidia-drm_gbm.so`, and an Xorg `nvidia_drv.so` (Xorg itself comes in with `gdm`; it
+    ran on hardware). `load-nvidia-drm.service` is `WantedBy=graphical.target` and the vendor sets
     `multi-user.target`, so the display driver loads only because this layer switches the
     target. Video decode is CPU either way (no VA-API on Tegra).
+  - **Display fixes, found on hardware** (jetson-1, 2026-11; each removed alone brought its
+    failure back). Gaps in the vendor image, worth a Red Hat case, not features:
+    - **Firmware, not the image:** UEFI's *SOC Display Hand-Off Mode* must be **Never** (ESC →
+      Device Manager → NVIDIA Configuration → Boot Configuration; a UEFI variable in QSPI). The
+      Jetson default, Auto, leaves UEFI's picture running when a monitor is connected at boot,
+      and the image's driver cannot take it over: "Input Signal Not Found" after GRUB, with
+      `NVRM_RPC_DCE: Failed RM ctrl call` for `0x731341` (DP AUX) and `0x731343` (link
+      training). Plugged in after boot it worked. A step after every QSPI flash (installer
+      `README.md` §5; the flash resets it). Not the cause:
+      the display firmware, QSPI layout and DTBs are byte-identical in R36.5.0 and R36.5.2.
+    - `libEGL_nvidia.so.0` is in `/usr/lib64/tegra-egl`, outside the loader path; the vendor
+      ships `tegra-egl/ld.so.conf` but never links it. Without it glvnd hands out Mesa's EGL,
+      mutter says `The GPU /dev/dri/card1 chosen as primary is not supported by EGL` and GDM
+      falls back to X. Linked into `/etc/ld.so.conf.d`, `ldconfig` at build.
+    - GDM's `61-gdm.rules` writes `WaylandEnable=false` for any NVIDIA driver without
+      `nvidia-sleep.sh`, which Tegra has not: masked in `/etc/udev/rules.d`.
+    - `gdm` and `kiosk` in `video` (sysusers `m`): `nvmap`, `nvhost-*` and `nvgpu/*` are
+      `root:video 0660`, as on NVIDIA's own Ubuntu (`99-tegra-devices.rules`).
+    - SELinux module `jetson-gpu` (`kiosk/jetson-gpu.cil`, `semodule -n -i` at build; a module
+      is named after its file, and jetson-1's hand-made one is `jetson-root`): those nodes are
+      `device_t` and the login screen (`xdm_t`) is denied them; labelled `dri_device_t`. The
+      session runs unconfined.
+    - A `gdm.service` drop-in `restorecon`s `/dev/nvidia-modeset` first: NVIDIA's udev rule
+      `mknod`s it, so it is `device_t` every boot though the policy says
+      `xserver_misc_device_t`.
+    - `sleep`, `suspend`, `hibernate`, `hybrid-sleep` targets masked: GNOME's login screen may
+      suspend on idle, and a suspended node stops MicroShift. Blanking is left at GNOME's
+      default (the maintainer's call).
   - **Input**: `usbhid`, `hid-generic`, `evdev` built in; `hid-multitouch`, `wacom`, `hid-elan`
     as modules, so USB keyboards, mice and HID touch screens work through libinput; non-HID
     touch controllers (`CONFIG_INPUT_TOUCHSCREEN` off) do not. Layout `us` from the kickstart.
@@ -270,17 +332,22 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     on tty1 instead of GDM, with CPU/memory caps; a GPU variant with GNOME Kiosk as a bare
     Wayland compositor and a smoke test requiring NVIDIA's EGL/GBM (`a4607a1`). Go back to one
     only for a measured reason. The CPU-only variant (Xorg `modesetting`, no acceleration,
-    custom service) is kept as branch `claude/kiosk-xorg-cpu` (`9ba1b12`): the fallback if GDM
-    refuses Wayland on NVIDIA or GNOME will not start on the Jetson's display stack.
+    custom service) is kept as branch `claude/kiosk-xorg-cpu` (`9ba1b12`); not needed since
+    GDM runs Wayland on NVIDIA's EGL on hardware with the fixes above.
   - Smoke test: default target `graphical.target` and `display-manager.service` → gdm; then it
     reads the hash file the drop-in names, fails unless it is `0600`, runs `systemd-sysusers`
     with it as the credential and `systemd-tmpfiles --create` in the throwaway test container,
     as a boot would, and checks `kiosk` exists with that hash in `/etc/shadow`, the
-    AccountsService session is the only session file the login screen offers, the linked
+    AccountsService session is the only session file the login screen offers, the logo
+    `DCONF_PROFILE=gdm dconf read` returns, the `Icon=` and the last `url(file://…)` in the
+    theme resource are PNGs in `/usr/share/jetson-kiosk` (a stale database reads empty; a
+    reinstalled theme names none), the linked
     script is executable and parses,
     `gnome-kiosk-script` still execs `~/.local/bin/gnome-kiosk-script`, `sshd_config` still
     includes `sshd_config.d` (else `DenyUsers` is ignored silently), no terminal emulator or
-    file manager got pulled in, `kiosk` has no group but its own, `/etc/pam.d/login`'s first
+    file manager got pulled in, `kiosk` has no group but its own and `video`, `gdm` is in
+    `video`, the loader cache has the library NVIDIA's EGL vendor file names, `matchpathcon`
+    gives `dri_device_t` for `nvmap`, `nvhost-*` and `nvgpu/*`, `/etc/pam.d/login`'s first
     `account` line refuses `kiosk`, `10-jetson-kiosk.rules` is the first polkit rule by name,
     and the policy parses.
     Locally: the hash step against good, missing, empty, plaintext and multi-line input; sysusers
@@ -436,7 +503,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   40 GiB xfs root, **no swap**, and **~16.5 GiB left free for LVMS** (fill the VG and the
   cluster has no dynamic PVs). Root locked; user `cloudlet` in `wheel` from
   `@JETSON_SSH_PUBKEY@`/`@JETSON_PASSWORD_HASH@`; `reboot --eject`. ISO label
-  `JETSON_ORIN_BOOTC`. Address and hostname are baked in, so two devices from
+  `ULTRON`. Address and hostname are baked in, so two devices from
   one ISO collide. No `%post`: the extra API SAN and the `/etc/hosts` entry were removed, so
   the laptop reaches 6443 through an SSH tunnel with the loopback kubeconfig.
 - **Node IP on `lo`** (`microshift/stable-microshift.nmconnection`,
@@ -455,10 +522,15 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `/run/NetworkManager/no-stub-resolv.conf`. Unverified on hardware.
 - `.github/workflows/build-image.yml` — **reusable**: register, bind storage for native
   overlay, write the pull secret, build, run the smoke test inside the result, push
-  `ghcr.io/<owner>/jetson-orin-bootc-<name>`, output the digest-pinned ref, and report the
-  layer size as a `::notice`. Tags: `<YYYYMMDD-sha8>`, `latest`, and `extra-tags` (`stable`
-  on all five layers; `4.20` on the two with MicroShift, passed from the same lines as
-  `USHIFT_VER` so the tag cannot lie). Tags are validated before the build.
+  `ghcr.io/<owner>/ultron-bootc-<name>`, output the digest-pinned ref, and report the
+  layer size as a `::notice`. Tags: `<YYYYMMDD-sha8>` on every build; `latest` and `stable`
+  only when `GITHUB_REF` is `refs/heads/main` (the caller's ref), so dispatching a branch to
+  test it moves neither. No MicroShift-version tag: `USHIFT_VER` is set once, as the
+  Containerfile's `ARG` default. The `also-as` name is validated before the build. `also-as` pushes
+  the same tags under a second name: `services` is also `ghcr.io/<owner>/ultron-bootc`, the finished
+  OS under the project's name. Its digest should equal the first (same compressed layers); a
+  mismatch is a `::warning`, not a failure, since nothing builds on it. The ISO and the chain
+  use `ultron-bootc-services`.
   **What a node follows is not settled.** bib installs the services layer pinned by digest
   from GHCR, so `bootc upgrade` has nothing to re-resolve and could not reach it anyway.
   `ostreecontainer` has no `--target-imgref`. Pointing the origin at the air-gapped `stable`
@@ -476,7 +548,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   implanted md5, so "Test this media" cannot verify the stick; unused, not restored. Upload
   the `*.iso` alone (no checksum file) at zip `compression-level: 9`, the maintainer's call; it is
   mostly gzip'd layers and squashfs, so the saving is small and the upload slower.
-- `.github/workflows/build-microshift.yml` — the only caller, on push to `main` under
+- `.github/workflows/ultron.yml` — the only caller, on push to `main` under
   `base/**`, `kiosk/**`, `microshift/**`, `services/**`, `config.toml` or the workflows, and on
   `workflow_dispatch`. **Nothing runs on a pull request.**
 
@@ -497,7 +569,7 @@ hardware.
 
 ## Next step: validate on hardware, then the app services
 
-1. Dispatch `build-microshift.yml`, `dd` the ISO, boot the devkit (QSPI from R36.5.x). Check
+1. Dispatch `ultron.yml`, `dd` the ISO, boot the devkit (QSPI from R36.5.x). Check
    `bootc status` (expect a digest-pinned GHCR origin, which cannot upgrade), `lsmod | grep
    nvgpu`, `nvidia-ctk cdi list` → `nvidia.com/gpu=all`, a GPU container, `systemctl
    is-enabled bootc-fetch-apply-updates.timer`, whether `jtop` works, and that
@@ -532,19 +604,23 @@ hardware.
    /dev/nvhost-ctrl-gpu /dev/nvmap`; if `root:video 0660`, add `supplementalGroups` on the
    InferenceService or CRI-O's `device_ownership_from_security_context`). Then `oci://` with an
    embedded modelcar image, proving the `uidModelcar` change.
-6. Kiosk, with a monitor on DP: `lsmod | grep -E 'nvidia_drm|nvidia_modeset'` and
-   `/dev/dri/card*`; `/run/gdm/custom.conf` without `WaylandEnable=false` (GDM's udev rules
-   write it when they refuse Wayland on a driver, and with no X server installed nothing would
-   start: that is the case for `claude/kiosk-xorg-cpu`); the login screen still appears with GNOME
+6. Kiosk, with a monitor on DP **from power-on** and UEFI's display hand-off at Never:
+   `lsmod | grep -E 'nvidia_drm|nvidia_modeset'` and `/dev/dri/card*`; `loginctl
+   show-session <id> -p Type` says `wayland` for the login screen and the kiosk session, and
+   `/run/gdm/custom.conf` does not exist; `lsof` shows `gnome-shell` (`gdm`) and the kiosk's
+   processes holding `/dev/nvmap`; the login screen still appears with GNOME
    Shell's session files deleted, and its gear lists only the kiosk session; it lists only `kiosk`,
-   the image's password logs in, `ssh kiosk@` is refused, Ctrl-Alt-F3 and the serial console
+   with `avatar.png` as its picture, `login-logo.png` where Red Hat's logo was and
+   `login-background.png` filling the screen (not tiled, not grey: St parsed the rule), the image's
+   password logs in, `ssh kiosk@` is refused, Ctrl-Alt-F3 and the serial console
    refuse `kiosk` and take `cloudlet`, `nmcli con mod` and `systemctl reboot` as `kiosk` are
    denied, `journalctl -b | grep -i polkit` shows nothing from the kiosk session breaking,
    `/usr/lib/jetson-kiosk/password-hash` is `0600 root`; Firefox opens on the URL; replug
    the cable and the picture returns; the screen does not blank; a USB keyboard, mouse and touch
    screen all drive the page, and whether the login screen offers an on-screen keyboard on touch;
    Shift held while Firefox restarts opens no troubleshoot dialog, Ctrl-P prints nothing;
-   `ausearch -m avc` clean; `about:support` for what Firefox draws with; `tegrastats` and
+   `journalctl -b | grep -E 'avc: +denied'` clean (`ausearch` is not installed); `systemctl
+   suspend` refused; `tegrastats` and
    Triton's p99 latency with the screen on and off. If the frontend plays H.264, it is a black
    box.
 7. Later layers `FROM` the k8s image: a `bootc switch` unit for the air-gapped registry,
@@ -558,7 +634,8 @@ JetPack 6.2.2 and the 8Gi slice size; where InferenceServices live, and whether 
 own layer above `services/`; what External Secrets reads from; NVMe before real apps land;
 registration vs. a self-hosted runner; per-device address and hostname before a second node;
 how `/etc/flightctl/config.yaml` reaches a node, and greenboot; `bootc switch` vs. retag for the
-node's origin, and whether `stable` moves on every green build or only after a hardware boot;
+node's origin, and whether `stable` should wait for a hardware boot (today it moves on every green build of
+`main`);
 lowering kubelet's image GC thresholds below the eviction line (only matters once images are
 pulled); whether the `services/` resource sizes survive hardware (the ratios are enforced, the
 sizes are guesses); the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
@@ -595,6 +672,9 @@ the frontend's video codec, preview size and on-screen keyboard.
 - `apt-get --download-only install` skips installed packages; a Debian bundle needs a clean
   container with separate download and index stages (legacy, from the Ubuntu evaluation).
 - `rockylinux:9`, not UBI, for any RPM-bundling builder; UBI lacks packages.
+- A monitor plugged in after boot hides the display hand-off failure: test with DP connected
+  from power-on. `libEGL warning: DRI3 error` in the journal means Mesa's EGL answered, not
+  NVIDIA's. Restarting GDM is not a test of the display; a reboot is.
 - Every base-image bump can break the GPU (the kmod is tied to one kernel). A container smoke
   test proves nothing about the GPU; boot hardware before promoting a tag.
 - `nvidia-ctk runtime configure --config=…/99-nvidia.conf` writes `99-nvidia.toml` and exits 0.
@@ -630,7 +710,7 @@ the frontend's video codec, preview size and on-screen keyboard.
 
 **Git / delivery.** Develop on the session's branch, commit with a message that says *why*,
 push, and open a PR only when asked. Always state which files changed. Nothing runs CI on a PR,
-so a branch is validated by dispatching `build-microshift.yml` against it; a claim that
+so a branch is validated by dispatching `ultron.yml` against it; a claim that
 something is tested should say whether that means locally or dispatched.
 
 ## Quick reference
@@ -648,21 +728,21 @@ cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi ext
 
 # Local image build on a subscribed RHEL 9 aarch64 box, from the repo root. Each layer FROM the
 # one before it; the workflow passes BASE_IMAGE as a digest.
-sudo podman build -f base/Containerfile.base     -t localhost/jetson-base:dev .
-sudo podman build -f base/Containerfile.podman   -t localhost/jetson-podman:dev \
-    --build-arg BASE_IMAGE=localhost/jetson-base:dev .
+sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev .
+sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
-sudo podman build -f kiosk/Containerfile         -t localhost/jetson-kiosk:dev \
+sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \
     --secret id=kiosk_password_hash,src=/tmp/kiosk-hash \
-    --build-arg BASE_IMAGE=localhost/jetson-podman:dev .
-sudo podman build -f microshift/Containerfile    -t localhost/jetson-microshift:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
+sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
-    --build-arg BASE_IMAGE=localhost/jetson-kiosk:dev .
-sudo podman build -f services/Containerfile      -t localhost/jetson-orin-bootc:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
+sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
-    --build-arg BASE_IMAGE=localhost/jetson-microshift:dev .
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 # Smoke tests are fed on stdin, the same way the workflow runs them
-podman run --rm -i localhost/jetson-orin-bootc:dev bash -s < services/smoke-test.sh
+podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh
 
 # ISO from the top of the chain
 sed -e "s|@JETSON_SSH_PUBKEY@|$(cat ~/.ssh/id_ed25519.pub)|" \
@@ -672,7 +752,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
   -v /tmp/config.toml:/config.toml:ro -v ./output:/output \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   registry.redhat.io/rhel9/bootc-image-builder:latest \
-  --type anaconda-iso --config /config.toml localhost/jetson-orin-bootc:dev
+  --type anaconda-iso --config /config.toml localhost/ultron-bootc-services:dev
 # -> output/bootiso/install.iso
 
 # On the device
