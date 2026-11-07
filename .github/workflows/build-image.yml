@@ -2,7 +2,7 @@
 # so any layer can COPY shared tooling.
 #
 # Ubuntu runner for native aarch64, all work inside a UBI container so
-# podman/skopeo come from RHEL and subscription-manager can supply entitlement.
+# podman comes from RHEL and subscription-manager can supply entitlement.
 # GitHub offers no RHEL-hosted runner.
 name: build bootc image
 
@@ -10,7 +10,7 @@ on:
   workflow_call:
     inputs:
       name:
-        description: image suffix; publishes ghcr.io/<owner>/jetson-orin-bootc-<name>
+        description: image suffix; publishes ghcr.io/<owner>/ultron-bootc-<name>
         type: string
         required: true
       containerfile:
@@ -24,10 +24,10 @@ on:
         description: newline-separated KEY=VALUE pairs
         type: string
         default: ""
-      extra-tags:
+      also-as:
         description: |
-          moving tags pushed alongside <date>-<sha8> and latest, whitespace
-          separated. All of them point at the same digest.
+          a second image name, ghcr.io/<owner>/<also-as>, pushed with the same
+          tags as the first. Empty: none.
         type: string
         default: ""
       runs-on:
@@ -53,7 +53,7 @@ jobs:
       volumes:
         - /mnt:/scratch
     env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/jetson-orin-bootc-${{ inputs.name }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/ultron-bootc-${{ inputs.name }}
       # Use this container's registration, not the (unsubscribed) host's.
       SMDEV_CONTAINER_OFF: 1
     outputs:
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Container tools
-        run: dnf -y install podman buildah skopeo jq
+        run: dnf -y install podman jq
 
       # UBI's default policy demands signatures for registry.redhat.io content.
       - name: Relax image signature policy in the builder
@@ -100,28 +100,27 @@ jobs:
           grep -q 'Native Overlay Diff:true' /tmp/graph \
             || { echo "::error::podman is not on native overlay; layer commits will take minutes each"; exit 1; }
 
-      # One immutable tag, then whatever moving ones the caller asked for. The
-      # immutable one is what a node is rolled back to and what the mirror keeps;
-      # the moving ones are what something upgrading follows.
+      # One immutable tag on every build: what a node is rolled back to and what
+      # the mirror keeps. latest and stable, what something upgrading follows,
+      # move only on main, so a branch dispatched to test it cannot move them.
       - name: Compute tags
         id: meta
         env:
-          EXTRA_TAGS: ${{ inputs.extra-tags }}
+          ALSO_AS: ${{ inputs.also-as }}
         run: |
           tag="$(date -u +%Y%m%d)-${GITHUB_SHA::8}"
-          # Unquoted on purpose: splits on any whitespace, newlines included.
-          tags="$(echo $tag latest $EXTRA_TAGS)"
-          # Before the build rather than after it: a tag podman rejects should
+          tags="$tag"
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            tags="$tag latest stable"
+          else
+            echo "::notice::$GITHUB_REF is not main: pushing $tag only, not latest or stable"
+          fi
+          # Before the build rather than after it: a name podman rejects should
           # not cost twenty minutes first.
-          for t in $tags; do
-            case $t in
-              [A-Za-z0-9_]*) ;;
-              *) echo "::error::not a usable image tag: ${t}"; exit 1 ;;
-            esac
-            case $t in
-              *[!A-Za-z0-9._-]*) echo "::error::not a usable image tag: ${t}"; exit 1 ;;
-            esac
-          done
+          case $ALSO_AS in
+            '') ;;
+            [a-z0-9]*[!a-z0-9._-]*|[!a-z0-9]*) echo "::error::not a usable image name: ${ALSO_AS}"; exit 1 ;;
+          esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
           echo "building $IMAGE with tags: $tags"
@@ -177,12 +176,15 @@ jobs:
 
       # Downstream layers consume the digest, not the tag. Every tag names the
       # same manifest, so the digest is taken from the first push and the rest
-      # only move a name onto it.
+      # only move a name onto it. The second name gets the same layers, already
+      # compressed, so its manifest should be byte-identical; a different digest
+      # is reported, not fatal, since nothing downstream builds on that name.
       - name: Push
         id: push
         env:
           TAG: ${{ steps.meta.outputs.tag }}
           TAGS: ${{ steps.meta.outputs.tags }}
+          ALSO_AS: ${{ inputs.also-as }}
         run: |
           podman push --digestfile=/tmp/digest "$IMAGE:$TAG"
           for t in $TAGS; do
@@ -190,6 +192,15 @@ jobs:
             podman push "$IMAGE:$t"
           done
           echo "image-ref=${IMAGE}@$(cat /tmp/digest)" >> "$GITHUB_OUTPUT"
+          if [ -n "$ALSO_AS" ]; then
+            also="${IMAGE%/*}/$ALSO_AS"
+            for t in $TAGS; do
+              podman push --digestfile=/tmp/also-digest "$IMAGE:$t" "docker://$also:$t"
+            done
+            [ "$(cat /tmp/also-digest)" = "$(cat /tmp/digest)" ] \
+              || echo "::warning::$also has digest $(cat /tmp/also-digest), $IMAGE has $(cat /tmp/digest)"
+            echo "::notice title=also published as::$also@$(cat /tmp/also-digest)"
+          fi
 
       - name: Unregister
         if: always()

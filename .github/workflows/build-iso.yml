@@ -16,10 +16,6 @@ on:
         description: path to the bootc-image-builder config.toml
         type: string
         required: true
-      name:
-        description: variant name, used for the ISO and artifact filenames
-        type: string
-        required: true
       tag:
         type: string
         required: true
@@ -39,13 +35,13 @@ jobs:
       volumes:
         - /mnt:/scratch
     env:
-      ISO_NAME: jetson-orin-bootc-${{ inputs.name }}-${{ inputs.tag }}.iso
+      ISO_NAME: ultron-${{ inputs.tag }}.iso
       SMDEV_CONTAINER_OFF: 1
     steps:
       - uses: actions/checkout@v4
 
       - name: Container tools
-        run: dnf -y install podman skopeo jq
+        run: dnf -y install podman jq
 
       # UBI's default policy demands signatures for registry.redhat.io content.
       - name: Relax image signature policy in the builder
@@ -171,7 +167,7 @@ jobs:
       # expect a small saving for several extra minutes of upload time.
       - uses: actions/upload-artifact@v4
         with:
-          name: jetson-orin-bootc-${{ inputs.name }}-iso-${{ inputs.tag }}
+          name: ultron-iso-${{ inputs.tag }}
           path: output/*.iso
           retention-days: 7
           compression-level: 9
