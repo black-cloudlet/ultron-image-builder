@@ -82,6 +82,8 @@ jobs:
       # The image a node actually boots and upgrades, so it is also published
       # under the project's name without a layer suffix.
       also-as: ultron-bootc
+      # Only here: the split is redone from the whole tree.
+      rechunk: true
     secrets: inherit
     permissions: { contents: read, packages: write }
 

@@ -446,13 +446,20 @@ strips `metacopy` and fails unless `podman info` reports `Native Overlay Diff:tr
 4. Log in to GHCR and write the OpenShift pull secret (build-time only, never in the image).
 5. Build the layer with the **repository root as context**, `BASE_IMAGE` set to the previous
    layer's **digest**.
-6. Report the layer's size as a `::notice`.
-7. Run the layer's **smoke test inside the built image** (`podman run -i … bash -s <
+6. **`services` only: rechunk.** `bootc-base-imagectl rechunk`, run inside the image it rewrites
+   (Red Hat's `rhel-bootc` base ships it and `rpm-ostree`), re-splits the merged tree into
+   per-RPM layers with mtimes zeroed, and the tags move onto the result. A plain build stamps
+   every layer with the build's mtimes, so an unchanged rebuild still gets new digests; after
+   rechunking, an unchanged package keeps its layer digest, and a `bootc upgrade` or a mirror
+   copy fetches only what changed. The result must pass `bootc container lint`; the layer
+   count is a `::notice` and the log lists each layer's size.
+7. Report the layer's size as a `::notice`.
+8. Run the layer's **smoke test inside the built image** (`podman run -i … bash -s <
    smoke-test.sh`); a failure stops the chain before anything is pushed.
-8. Push under every tag and output the image pinned by digest for the next job. With
+9. Push under every tag and output the image pinned by digest for the next job. With
    `also-as` (only `services` sets it, to `ultron-bootc`), push the same tags under that second name
-   too, and warn if its digest differs.
-9. Unregister, even on failure.
+   too, and warn if its digest differs. Both names carry the rechunked image.
+10. Unregister, even on failure.
 
 Every layer is published under these tags, all naming the same manifest:
 
@@ -460,7 +467,7 @@ Every layer is published under these tags, all naming the same manifest:
 |---|---|---|
 | `<YYYYMMDD>-<sha8>` | every build | immutable: what a node rolls back to, what a mirror keeps |
 | `latest` | builds of `main` only | the last build of `main` |
-| `stable` | builds of `main` only | the release set: all five layers from one run, mirrored together |
+| `stable` | builds of `main` only | the release set: all five layers from one run, mirrored together. `services` is rechunked, so it shares no blobs with the four below it: a mirror of all five stores that content twice, and a node needs only `services` |
 
 A branch dispatched to test it gets only the immutable tag, so it never moves what anything
 upgrading follows. The MicroShift version is not a tag; it is `USHIFT_VER` in

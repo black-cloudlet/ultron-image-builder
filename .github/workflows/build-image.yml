@@ -30,6 +30,10 @@ on:
           tags as the first. Empty: none.
         type: string
         default: ""
+      rechunk:
+        description: split the image into reproducible per-RPM layers; top layer only
+        type: boolean
+        default: false
       runs-on:
         description: runner label; must be native aarch64
         type: string
@@ -163,6 +167,31 @@ jobs:
             --secret id=pullsecret,src=/tmp/pull-secret.json \
             --secret id=kiosk_password_hash,src=/tmp/kiosk-password-hash \
             -f "${{ inputs.containerfile }}" .
+
+      # Per-RPM layers with mtimes zeroed, so an unchanged package keeps its digest.
+      # Runs inside the image, where the tool is, on the builder's store and
+      # storage.conf. Before the size and smoke test, so both see what is pushed.
+      - name: Rechunk
+        if: inputs.rechunk
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          podman run --rm --privileged \
+            -v /var/lib/containers:/var/lib/containers \
+            -v /etc/containers/storage.conf:/etc/containers/storage.conf:ro \
+            "$IMAGE:$TAG" \
+            /usr/libexec/bootc-base-imagectl rechunk "$IMAGE:$TAG" "localhost/rechunked:$TAG"
+          for t in $TAGS; do
+            podman tag "localhost/rechunked:$TAG" "$IMAGE:$t"
+          done
+          # With no name given, untag strips every tag.
+          podman untag "$IMAGE:$TAG" "localhost/rechunked:$TAG"
+          podman run --rm "$IMAGE:$TAG" bootc container lint
+          layers=$(podman image inspect --format '{{len .RootFS.Layers}}' "$IMAGE:$TAG")
+          echo "::notice title=${{ inputs.name }} rechunked::$layers layers"
+          podman history --format '{{.Size}}\t{{.CreatedBy}}' "$IMAGE:$TAG" | cut -c1-160
+          df -h /var/lib/containers
 
       # Roughly what the deployment occupies on the node — the number the root LV
       # is sized against. Per layer, so the differences say where the bytes went.
