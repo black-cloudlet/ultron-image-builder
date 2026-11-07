@@ -31,10 +31,7 @@ on:
         type: string
         default: ""
       rechunk:
-        description: |
-          re-split the finished image into reproducible per-package layers. Only
-          the image nodes boot needs it: it is redone from the whole merged tree,
-          so rechunking a layer below buys nothing.
+        description: split the image into reproducible per-RPM layers; top layer only
         type: boolean
         default: false
       runs-on:
@@ -171,13 +168,9 @@ jobs:
             --secret id=kiosk_password_hash,src=/tmp/kiosk-password-hash \
             -f "${{ inputs.containerfile }}" .
 
-      # Each RUN leaves one layer stamped with this build's mtimes, so a rebuild
-      # of unchanged content still gets new digests and a node re-downloads all
-      # of it. Rechunking re-splits the merged tree by RPM with mtimes zeroed, so
-      # an unchanged package keeps its layer digest. The tool and rpm-ostree come
-      # from Red Hat's rhel-bootc base, so it runs inside the image it rewrites.
-      # The builder's storage.conf goes in too: one store, one set of mount
-      # options. Before the size and smoke test, so both see what is pushed.
+      # Per-RPM layers with mtimes zeroed, so an unchanged package keeps its digest.
+      # Runs inside the image, where the tool is, on the builder's store and
+      # storage.conf. Before the size and smoke test, so both see what is pushed.
       - name: Rechunk
         if: inputs.rechunk
         env:
@@ -192,13 +185,11 @@ jobs:
           for t in $TAGS; do
             podman tag "localhost/rechunked:$TAG" "$IMAGE:$t"
           done
-          # Name what to remove: with no name, untag strips every tag, ours too.
+          # With no name given, untag strips every tag.
           podman untag "$IMAGE:$TAG" "localhost/rechunked:$TAG"
-          # A rewritten image: prove it is still one bootc will install.
           podman run --rm "$IMAGE:$TAG" bootc container lint
           layers=$(podman image inspect --format '{{len .RootFS.Layers}}' "$IMAGE:$TAG")
           echo "::notice title=${{ inputs.name }} rechunked::$layers layers"
-          # How content no RPM owns (the embedded images) was grouped.
           podman history --format '{{.Size}}\t{{.CreatedBy}}' "$IMAGE:$TAG" | cut -c1-160
           df -h /var/lib/containers
 
