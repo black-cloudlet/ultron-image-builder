@@ -88,7 +88,7 @@ This repository is the right-hand column.
 ## The layers
 
 The image is built as a chain of five container images. Each is `FROM` the one before it, by
-digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-<name>`:
+digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-bootc-<name>`:
 
 ```
  base            Red Hat's JetPack-for-RHEL image, republished under our name
@@ -106,15 +106,15 @@ digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-
 
 | Layer | Built from | Published as | Adds | Needs RHEL entitlement |
 |---|---|---|---|---|
-| base | `base/Containerfile.base` | `ultron-base` | nothing: a pure republish of the vendor image | no (registers anyway, one code path) |
-| bound-images | `base/Containerfile.podman` | `ultron-bound-images` | the scripts and boot unit that embed and restore container images; `jtop`; the Edge Manager agent | yes (`python3-pip`, `rhacm` repo) |
-| kiosk | `kiosk/Containerfile` | `ultron-kiosk` | GDM, GNOME Kiosk, Firefox, the `kiosk` user | yes (AppStream) |
-| microshift | `microshift/Containerfile` | `ultron-microshift` | MicroShift, firewall, node networking, GPU device plugin, 9+ embedded images | yes (`rhocp` + `fast-datapath` repos) |
-| services | `services/Containerfile` | `ultron-services`, and `ultron` | four kustomize roots applied by MicroShift, 7 embedded images | no RPMs |
+| base | `base/Containerfile.base` | `ultron-bootc-base` | nothing: a pure republish of the vendor image | no (registers anyway, one code path) |
+| bound-images | `base/Containerfile.podman` | `ultron-bootc-bound-images` | the scripts and boot unit that embed and restore container images; `jtop`; the Edge Manager agent | yes (`python3-pip`, `rhacm` repo) |
+| kiosk | `kiosk/Containerfile` | `ultron-bootc-kiosk` | GDM, GNOME Kiosk, Firefox, the `kiosk` user | yes (AppStream) |
+| microshift | `microshift/Containerfile` | `ultron-bootc-microshift` | MicroShift, firewall, node networking, GPU device plugin, 9+ embedded images | yes (`rhocp` + `fast-datapath` repos) |
+| services | `services/Containerfile` | `ultron-bootc-services`, and `ultron-bootc` | four kustomize roots applied by MicroShift, 7 embedded images | no RPMs |
 
-The top layer is the finished OS, so it is also pushed as plain **`ghcr.io/black-cloudlet/ultron`**,
+The top layer is the finished OS, so it is also pushed as **`ghcr.io/black-cloudlet/ultron-bootc`**,
 with the same tags. That is the name to mirror and boot. The ISO still installs
-`ultron-services` by digest, which is the same manifest.
+`ultron-bootc-services` by digest, which is the same manifest.
 
 **Why a chain instead of one Containerfile:** rebuild cost. The microshift layer installs RPMs
 and pulls MicroShift's whole control plane (nine images); the services layer changes far more
@@ -162,7 +162,7 @@ present. It also fails if this layer embedded any image, since anything embedded
 paid for by every variant.
 
 The file name and the image name differ: `Containerfile.podman` builds the image published as
-`ultron-bound-images`, from a CI job spelled `bound_images`. The underscore matters:
+`ultron-bootc-bound-images`, from a CI job spelled `bound_images`. The underscore matters:
 `needs.bound-images` would parse as a subtraction.
 
 ### kiosk: Firefox on the DisplayPort output
@@ -450,7 +450,7 @@ strips `metacopy` and fails unless `podman info` reports `Native Overlay Diff:tr
 7. Run the layer's **smoke test inside the built image** (`podman run -i … bash -s <
    smoke-test.sh`); a failure stops the chain before anything is pushed.
 8. Push under every tag and output the image pinned by digest for the next job. With
-   `also-as` (only `services` sets it, to `ultron`), push the same tags under that second name
+   `also-as` (only `services` sets it, to `ultron-bootc`), push the same tags under that second name
    too, and warn if its digest differs.
 9. Unregister, even on failure.
 
@@ -635,22 +635,22 @@ On a **subscribed RHEL 9 aarch64** host (every layer above `base` needs entitlem
 injects on a registered host), from the repository root:
 
 ```bash
-sudo podman build -f base/Containerfile.base   -t localhost/ultron-base:dev .
-sudo podman build -f base/Containerfile.podman -t localhost/ultron-bound-images:dev \
-  --build-arg BASE_IMAGE=localhost/ultron-base:dev .
+sudo podman build -f base/Containerfile.base   -t localhost/ultron-bootc-base:dev .
+sudo podman build -f base/Containerfile.podman -t localhost/ultron-bootc-bound-images:dev \
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
-sudo podman build -f kiosk/Containerfile       -t localhost/ultron-kiosk:dev \
+sudo podman build -f kiosk/Containerfile       -t localhost/ultron-bootc-kiosk:dev \
   --secret id=kiosk_password_hash,src=/tmp/kiosk-hash \
-  --build-arg BASE_IMAGE=localhost/ultron-bound-images:dev .
-sudo podman build -f microshift/Containerfile  -t localhost/ultron-microshift:dev \
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
+sudo podman build -f microshift/Containerfile  -t localhost/ultron-bootc-microshift:dev \
   --secret id=pullsecret,src=$HOME/pull-secret.json \
-  --build-arg BASE_IMAGE=localhost/ultron-kiosk:dev .
-sudo podman build -f services/Containerfile    -t localhost/ultron-services:dev \
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
+sudo podman build -f services/Containerfile    -t localhost/ultron-bootc-services:dev \
   --secret id=pullsecret,src=$HOME/pull-secret.json \
-  --build-arg BASE_IMAGE=localhost/ultron-microshift:dev .
+  --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 
 # Smoke tests run inside the image, fed on stdin, as CI runs them
-sudo podman run --rm -i localhost/ultron-services:dev bash -s < services/smoke-test.sh
+sudo podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh
 
 # ISO
 sed -e "s|@JETSON_SSH_PUBKEY@|$(cat ~/.ssh/id_ed25519.pub)|" \
@@ -660,7 +660,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
   -v /tmp/config.toml:/config.toml:ro -v ./output:/output \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   registry.redhat.io/rhel9/bootc-image-builder:latest \
-  --type anaconda-iso --config /config.toml localhost/ultron-services:dev
+  --type anaconda-iso --config /config.toml localhost/ultron-bootc-services:dev
 # -> output/bootiso/install.iso
 ```
 

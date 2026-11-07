@@ -2,7 +2,7 @@
 
 Provisioning and image pipeline for NVIDIA Jetson AGX Orin edge nodes running RHEL image mode
 (bootc) in a disconnected environment. The project is **Ultron**: images are
-`ultron-<layer>`, the top one also plain `ultron`, the ISO `ultron-<tag>.iso`. Read this whole file before touching anything.
+`ultron-bootc-<layer>`, the top one also `ultron-bootc`, the ISO `ultron-<tag>.iso`. Read this whole file before touching anything.
 
 **Two repos.** This one holds the image pipeline (`base/`, `microshift/`, `services/`,
 `.github/workflows/`). The flashing-station tooling (`mirror.sh`, `install-offline.sh`, the
@@ -106,7 +106,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    - `base/Containerfile.base` republishes the pinned vendor image under our name, plus field
      tools (`tcpdump` and the like).
    - `base/Containerfile.podman` adds the physically-bound-images machinery and `jtop`.
-     Published as `ultron-bound-images` from CI job `bound_images` (an underscore:
+     Published as `ultron-bootc-bound-images` from CI job `bound_images` (an underscore:
      `needs.bound-images` parses as a subtraction and resolves to nothing).
    - `kiosk/` adds GDM, GNOME Kiosk's script session, Firefox and the `kiosk` user. Shared,
      below the variant: nothing in it is about the cluster, so a service change never reinstalls
@@ -117,7 +117,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
      with every image they name embedded.
    Service images sit **above** the variant layer so changing one does not re-run the
    MicroShift install and re-pull its nine images. Each layer is pushed as
-   `ultron-<name>` and the next builds on its **digest**. CI is two reusable
+   `ultron-bootc-<name>` and the next builds on its **digest**. CI is two reusable
    workflows (`build-image.yml`, `build-iso.yml`) plus `ultron.yml`, chaining base →
    bound-images → kiosk → microshift → services → ISO. The build context is the repo root. Every
    layer registers with subscription-manager, even the one that installs nothing: one code path.
@@ -484,15 +484,15 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `/run/NetworkManager/no-stub-resolv.conf`. Unverified on hardware.
 - `.github/workflows/build-image.yml` — **reusable**: register, bind storage for native
   overlay, write the pull secret, build, run the smoke test inside the result, push
-  `ghcr.io/<owner>/ultron-<name>`, output the digest-pinned ref, and report the
+  `ghcr.io/<owner>/ultron-bootc-<name>`, output the digest-pinned ref, and report the
   layer size as a `::notice`. Tags: `<YYYYMMDD-sha8>` on every build; `latest` and `stable`
   only when `GITHUB_REF` is `refs/heads/main` (the caller's ref), so dispatching a branch to
   test it moves neither. No MicroShift-version tag: `USHIFT_VER` is set once, as the
   Containerfile's `ARG` default. The `also-as` name is validated before the build. `also-as` pushes
-  the same tags under a second name: `services` is also `ghcr.io/<owner>/ultron`, the finished
+  the same tags under a second name: `services` is also `ghcr.io/<owner>/ultron-bootc`, the finished
   OS under the project's name. Its digest should equal the first (same compressed layers); a
   mismatch is a `::warning`, not a failure, since nothing builds on it. The ISO and the chain
-  use `ultron-services`.
+  use `ultron-bootc-services`.
   **What a node follows is not settled.** bib installs the services layer pinned by digest
   from GHCR, so `bootc upgrade` has nothing to re-resolve and could not reach it anyway.
   `ostreecontainer` has no `--target-imgref`. Pointing the origin at the air-gapped `stable`
@@ -674,21 +674,21 @@ cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi ext
 
 # Local image build on a subscribed RHEL 9 aarch64 box, from the repo root. Each layer FROM the
 # one before it; the workflow passes BASE_IMAGE as a digest.
-sudo podman build -f base/Containerfile.base     -t localhost/ultron-base:dev .
-sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bound-images:dev \
-    --build-arg BASE_IMAGE=localhost/ultron-base:dev .
+sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev .
+sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
-sudo podman build -f kiosk/Containerfile         -t localhost/ultron-kiosk:dev \
+sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \
     --secret id=kiosk_password_hash,src=/tmp/kiosk-hash \
-    --build-arg BASE_IMAGE=localhost/ultron-bound-images:dev .
-sudo podman build -f microshift/Containerfile    -t localhost/ultron-microshift:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
+sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
-    --build-arg BASE_IMAGE=localhost/ultron-kiosk:dev .
-sudo podman build -f services/Containerfile      -t localhost/ultron-services:dev \
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
+sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
-    --build-arg BASE_IMAGE=localhost/ultron-microshift:dev .
+    --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 # Smoke tests are fed on stdin, the same way the workflow runs them
-podman run --rm -i localhost/ultron-services:dev bash -s < services/smoke-test.sh
+podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh
 
 # ISO from the top of the chain
 sed -e "s|@JETSON_SSH_PUBKEY@|$(cat ~/.ssh/id_ed25519.pub)|" \
@@ -698,7 +698,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
   -v /tmp/config.toml:/config.toml:ro -v ./output:/output \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   registry.redhat.io/rhel9/bootc-image-builder:latest \
-  --type anaconda-iso --config /config.toml localhost/ultron-services:dev
+  --type anaconda-iso --config /config.toml localhost/ultron-bootc-services:dev
 # -> output/bootiso/install.iso
 
 # On the device

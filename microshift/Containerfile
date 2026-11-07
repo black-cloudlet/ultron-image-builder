@@ -1,6 +1,6 @@
 # Layer 4, microshift variant: MicroShift 4.20 and the NVIDIA device plugin.
 # services/ stacks what runs on the cluster on top.
-ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-kiosk:latest
+ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-bootc-kiosk:latest
 FROM ${BASE_IMAGE}
 
 # Both repos are entitlement-gated; the build registers. No `dnf upgrade`: it

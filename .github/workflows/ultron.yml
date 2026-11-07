@@ -80,8 +80,8 @@ jobs:
       smoke-test: services/smoke-test.sh
       build-args: BASE_IMAGE=${{ needs.microshift.outputs.image-ref }}
       # The image a node actually boots and upgrades, so it is also published
-      # under the project's plain name.
-      also-as: ultron
+      # under the project's name without a layer suffix.
+      also-as: ultron-bootc
     secrets: inherit
     permissions: { contents: read, packages: write }
 

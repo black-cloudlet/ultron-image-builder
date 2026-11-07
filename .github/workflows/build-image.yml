@@ -10,7 +10,7 @@ on:
   workflow_call:
     inputs:
       name:
-        description: image suffix; publishes ghcr.io/<owner>/ultron-<name>
+        description: image suffix; publishes ghcr.io/<owner>/ultron-bootc-<name>
         type: string
         required: true
       containerfile:
@@ -53,7 +53,7 @@ jobs:
       volumes:
         - /mnt:/scratch
     env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/ultron-${{ inputs.name }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/ultron-bootc-${{ inputs.name }}
       # Use this container's registration, not the (unsubscribed) host's.
       SMDEV_CONTAINER_OFF: 1
     outputs:

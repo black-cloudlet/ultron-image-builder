@@ -1,6 +1,6 @@
 # Layer 2, shared: embedding machinery, jtop, Edge Manager agent. The images it
 # replays are embedded by the layers above — never here, where every variant pays.
-ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-base:latest
+ARG BASE_IMAGE=ghcr.io/black-cloudlet/ultron-bootc-base:latest
 FROM ${BASE_IMAGE}
 
 # --prefix=/usr: /usr/local is machine state on bootc and would not survive.
