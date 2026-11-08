@@ -1,0 +1,8 @@
+# Namespaced: it signs the CA and nothing else.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: device-ca-bootstrap
+  namespace: cert-manager
+spec:
+  selfSigned: {}

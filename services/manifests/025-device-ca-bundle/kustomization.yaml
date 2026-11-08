@@ -1,0 +1,10 @@
+# ConfigMap ca-bundle in every namespace: the CA certificate, never its key.
+# Two hops, since ESO reads a Secret whole and a ClusterSecretStore serves any
+# namespace: only a store local to cert-manager touches device-ca.
+# Numbered after 020, which installs ESO's types. MicroShift applies the roots
+# in order and skips one still failing after ten minutes until its next restart.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - public-copy.yaml
+  - distribute.yaml

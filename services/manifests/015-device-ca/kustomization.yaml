@@ -1,0 +1,8 @@
+# The node's own CA, generated on the node: never in the image, different on
+# every node. Beside 010: it needs only cert-manager's webhook.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - bootstrap-issuer.yaml
+  - certificate.yaml
+  - cluster-issuer.yaml

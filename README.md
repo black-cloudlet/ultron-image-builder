@@ -29,7 +29,7 @@ time and shipped inside one OS image:
 - the OS, kernel and NVIDIA drivers (JetPack for RHEL);
 - the Kubernetes distribution (MicroShift 4.20) and its GPU device plugin;
 - the services that run on the cluster (cert-manager, External Secrets, KServe and a Triton
-  model server);
+  model server), and a CA of the node's own, trusted from every namespace;
 - a kiosk: the frontend in Firefox, fullscreen on the DisplayPort output;
 - **every container image** any of the above will ever start, so the cluster comes up with no
   registry reachable.
@@ -99,7 +99,7 @@ digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-
    │
  microshift      MicroShift 4.20 + NVIDIA device plugin (GPU time slicing) + their images
    │
- services        cert-manager, External Secrets, KServe, Triton runtime + their images
+ services        cert-manager, External Secrets, KServe, Triton runtime, device CA + images
    │
  ISO             unattended installer (bootc-image-builder), built from services
 ```
@@ -287,12 +287,18 @@ image is embedded and pinned.
 downloads the upstream installs (version-pinned ARGs), and embeds every image the rendered
 manifests name. MicroShift applies these kustomize roots itself at every start, **in name order**,
 retrying a failing root every 10 s for up to 10 minutes. That is how a root that needs another
-root's CRDs or webhook (`040` needs `030`) settles without anything sequencing it.
+root's CRDs or webhook (`040` needs `030`) settles without anything sequencing it. It is also why
+a root must sort **after** whatever it needs: one at a time, MicroShift gives up on a root after
+those 10 minutes and does not return to it until it restarts. So the device CA sits beside
+cert-manager (`015`) and its distribution right after External Secrets (`025`), whose kinds it
+uses.
 
 | Root | Service | What it does here | Namespace | Pods |
 |---|---|---|---|---|
 | `010-cert-manager` | cert-manager v1.21.2 | Issues KServe's webhook serving certificates (self-signed issuer, no ACME) | `cert-manager` | 3 |
-| `020-external-secrets` | External Secrets v0.19.2 | Syncs secrets from an external store. **No store configured yet** | `external-secrets-operator` (moved off `default`) | 3 |
+| `015-device-ca` | cert-manager objects | The node's own CA, generated on the node, and ClusterIssuer `device-ca` signing with it | `cert-manager` | 0 |
+| `020-external-secrets` | External Secrets v1.2.0 | Syncs secrets from a store; may write ConfigMaps too. **No external store configured yet** | `external-secrets-operator` (moved off `default`) | 3 |
+| `025-device-ca-bundle` | External Secrets objects | Copies the CA certificate (never its key) into ConfigMap `ca-bundle` in every namespace | `cert-manager`, then every namespace | 0 |
 | `030-kserve` | KServe v0.20.0, Standard (raw Deployment) mode | Turns an `InferenceService` into a model-serving Deployment + Service | `kserve` | 1 |
 | `040-triton-runtime` | NVIDIA Triton (`25.02-py3-igpu`) | The `ClusterServingRuntime` every InferenceService uses: TensorRT and ONNX models on the iGPU | cluster-scoped | one per InferenceService |
 
@@ -309,6 +315,23 @@ stops matching fails the build.
   including three namespace names inside container arguments. Those are JSON patches, each
   guarded by a `test` op, so an upstream reorder fails the build rather than rewriting the wrong
   argument.
+- Generic targets are on: the controller runs with `--unsafe-allow-generic-targets` and a
+  ClusterRole lets it write ConfigMaps, so an ExternalSecret can produce a ConfigMap. `025` uses it.
+
+**Device CA.** Every node has a CA of its own: cert-manager generates the key on the node the
+first time MicroShift applies `015`, and it never leaves the node's etcd. Two nodes from one ISO
+have different CAs. It survives reboots and OS upgrades, and is replaced by
+`microshift-cleanup-data` or a re-image.
+- `015`: a self-signed `Issuer` signs the CA `Certificate` (`isCA`, ECDSA P-256, ten years, key
+  kept on renewal), and `ClusterIssuer` **`device-ca`** signs with it. Any namespace gets a
+  certificate from it with `issuerRef: {kind: ClusterIssuer, name: device-ca}`.
+- `025`: every namespace gets ConfigMap **`ca-bundle`**, key `ca.crt`. Mount it to trust
+  certificates `device-ca` issued.
+- The CA Secret holds the private key, and External Secrets reads a Secret whole, so `025` is two
+  hops. In `cert-manager`, a namespaced `SecretStore` that alone may read `device-ca` copies its
+  certificate into Secret `device-ca-public`. A `ClusterSecretStore` whose account may read
+  `device-ca-public` and nothing else feeds a `ClusterExternalSecret` that writes the ConfigMap
+  into every namespace, including ones created later (within a minute).
 
 **KServe.**
 - Only `kserve-controller-manager` runs. It serves every webhook used here.
@@ -505,7 +528,7 @@ if that kernel has the `sdhci-tegra` driver. If the installer finds no disk, che
 | `JETSON_PASSWORD_HASH` | `openssl passwd -6` output for `cloudlet`: the hash, not the password |
 | `JETSON_KIOSK_PASSWORD_HASH` | `openssl passwd -6` output for `kiosk`, typed on the screen's login: the hash, not the password. Goes **into the image** (the kiosk layer); the build fails without it |
 
-The services layer's images (`quay.io/jetstack`, `oci.external-secrets.io`, `docker.io/kserve`,
+The services layer's images (`quay.io/jetstack`, `ghcr.io/external-secrets`, `docker.io/kserve`,
 `quay.io/brancz`, `nvcr.io/nvidia`) are public and pulled anonymously.
 
 Notes on registration:
@@ -694,7 +717,9 @@ Give every container requests and limits at the house ratios, keep it admissible
   `device_ownership_from_security_context`.
 - **No model is deployed yet.** Nothing creates an `InferenceService`, and where they will live is
   open.
-- **External Secrets has nothing to read from.** No `SecretStore` is configured.
+- **External Secrets has no external store.** Its only stores read the device CA.
+- **Anyone who may create a `Certificate` may get one from `device-ca`**, a sub-CA included.
+  Upstream grants that to every namespace's `admin` and `edit` roles.
 - **A node cannot upgrade yet.** The ISO installs the services image pinned by digest from GHCR,
   which an air-gapped node cannot reach. Pointing it at the air-gapped registry's `stable` tag
   needs a one-time `bootc switch` or a retag before the ISO is built, plus registry credentials

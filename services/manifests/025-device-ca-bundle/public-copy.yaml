@@ -1,0 +1,70 @@
+# Hop 1: tls.crt alone into device-ca-public. Not ca.crt, which would become an
+# organisation root if one ever signed this CA.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: device-ca-exporter
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: device-ca-exporter
+  namespace: cert-manager
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["device-ca"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: device-ca-exporter
+  namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: device-ca-exporter
+subjects:
+  - kind: ServiceAccount
+    name: device-ca-exporter
+    namespace: cert-manager
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: device-ca
+  namespace: cert-manager
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: cert-manager
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: device-ca-exporter
+---
+# Without `property`, every key comes back, tls.key included.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: device-ca-public
+  namespace: cert-manager
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: device-ca
+  target:
+    name: device-ca-public
+    creationPolicy: Owner
+  data:
+    - secretKey: ca.crt
+      remoteRef:
+        key: device-ca
+        property: tls.crt

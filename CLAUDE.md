@@ -20,9 +20,9 @@ reaches the internet.
 - RHEL 9.8 image mode (bootc), aarch64
 - **MicroShift 4.20** is the only variant. A k3s variant was built by nothing and removed; it
   is in git history
-- On the cluster: cert-manager, External Secrets, KServe (Standard mode) and a Triton
-  `ClusterServingRuntime`, from `services/`. Still to come: PostgreSQL, RabbitMQ, the first
-  `InferenceService`
+- On the cluster: cert-manager, External Secrets, KServe (Standard mode), a Triton
+  `ClusterServingRuntime` and a per-device CA published to every namespace, from `services/`.
+  Still to come: PostgreSQL, RabbitMQ, the first `InferenceService`
 - Every container image physically bound into the OS image (zero network at first boot)
 - A kiosk: a monitor on the Jetson's DisplayPort shows the frontend in Firefox, fullscreen. It
   must be on the Jetson itself (maintainer's requirement; a separate display box was offered and
@@ -194,11 +194,12 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     Otherwise the first thing to prune would be kubelet's image GC at 85% disk, deleting
     exactly the images there is no registry to re-pull. Prune runs before copy; an image still
     held by a container stays on the list for next boot; failures are logged, never fatal.
-  - **Pinned in CRI-O** (`microshift/crio.conf.d/20-pinned-images.conf`): kubelet's image GC
-    and disk-pressure reclaim skip embedded images (an unused Triton would otherwise be gone
-    until the next boot); the prune still removes them, since podman ignores CRI-O pins.
-    Registry prefixes for every layer (`docker.io`, `nvcr.io`, `oci.external-secrets.io`,
-    `quay.io`, `registry.redhat.io`), `services/` included. **One list**: a second drop-in
+  - **Pinned in CRI-O** (`microshift/crio.conf.d/20-pinned-images.conf`): kubelet's image GC and
+    disk-pressure reclaim skip embedded images (an unused Triton would otherwise be gone until
+    the next boot); the prune still removes them, since podman ignores CRI-O pins. Registry
+    prefixes for every layer (`docker.io`, `ghcr.io/external-secrets`, `nvcr.io`, `quay.io`,
+    `registry.redhat.io`), `services/` included. GHCR by repository only: our OS images live
+    there, and anything pulled from it would never be collected. **One list**: a second drop-in
     replaces it, so a new registry goes in this file. **Never pin a pulled image**: nothing
     would delete it. So no `registries.conf` mirror for a pinned registry, and air-gapped app
     layers embed from `<registry>/embedded/*`, pull from `<registry>/apps/*`. Both smoke tests
@@ -390,7 +391,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 - `microshift/manifest-images.sh` — prints every image the given manifest roots name, rendered
   with `oc kustomize` (release-info lists only the control plane, and `images:` transformers
   defeat a grep). The build embeds what it prints; `services/` uses it too.
-- `services/Containerfile` — four numbered roots under `/usr/lib/microshift/manifests.d/`, plus
+- `services/Containerfile` — six numbered roots under `/usr/lib/microshift/manifests.d/`, plus
   every image they name. MicroShift **sorts** the roots and applies each with the equivalent of
   `kubectl apply -k`, retrying a failing one **every 10 s for 10 minutes**
   (`pkg/kustomize/kustomize.go`) — that is the ordering and what covers a CRD not yet served.
@@ -407,7 +408,16 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   that drifted.
   - `010-cert-manager/` — upstream static manifest (`CERT_MANAGER_VER`, v1.21.2), patched for
     resources only. KServe's webhook certificate comes from it.
-  - `020-external-secrets/` — upstream manifest (`EXTERNAL_SECRETS_VER`, v0.19.2):
+  - `015-device-ca/` — the node's own CA. Self-signed `Issuer` `device-ca-bootstrap` →
+    `Certificate` `device-ca` (`isCA`, ECDSA P-256, 87600h, **`rotationPolicy: Never`**:
+    renewal keeps the key so old leaves and stale bundles still verify; cert-manager's default
+    became `Always` in v1.18) → `ClusterIssuer` `device-ca`. All in `cert-manager`, the
+    controller's `--cluster-resource-namespace`. The key is generated on the node, lives in
+    etcd, survives reboots and upgrades, and is never in the image: two nodes from one ISO have
+    different CAs, with the same CN (no per-device hostname yet). Beside `010`: it needs only
+    cert-manager's webhook, which `030` waits on anyway for KServe's Certificates.
+  - `020-external-secrets/` — upstream manifest (`EXTERNAL_SECRETS_VER`, v1.2.0; image on
+    `ghcr.io` from v1.1, `oci.external-secrets.io` before):
     - Each Deployment's patch deletes the `runAsUser: 1000` upstream pins (restricted-v2 assigns
       a UID from the namespace range and refuses a pinned one) and adds resources.
       `runAsNonRoot: true` stays.
@@ -418,7 +428,31 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
       valid certificate, and no ExternalSecret can be created.
     - The strategic-merge patches still say `namespace: default`: patches run before the
       namespace transformer.
-    - No `SecretStore` yet, so what it reads from is unsettled.
+    - **Generic targets on** (`controller-args.yaml` appends `--unsafe-allow-generic-targets`,
+      `generic-targets.yaml` a ClusterRole writing ConfigMaps, as the chart's
+      `genericTargets.enabled`): an ExternalSecret may write a ConfigMap. Needs ESO ≥ v1.0
+      (`target.manifest`); the flag without the role is an error in every namespace.
+    - No external store yet, so what it reads from is unsettled.
+  - `025-device-ca-bundle/` — ConfigMap `ca-bundle` (key `ca.crt`) in every namespace. **Two
+    hops**, because ESO's Kubernetes provider reads a Secret whole and a `ClusterSecretStore` can
+    be named from any namespace: one able to read `device-ca` would hand anyone with
+    ExternalSecret rights `tls.key`.
+    - `public-copy.yaml`: in `cert-manager`, SA + Role (`get`, `resourceNames: [device-ca]`) +
+      namespaced `SecretStore` + ExternalSecret copying `tls.crt` (not `ca.crt`: that becomes an
+      org root if one ever signs this CA) to Secret `device-ca-public`.
+    - `distribute.yaml`: SA + Role (`get`, `resourceNames: [device-ca-public]`) +
+      `ClusterSecretStore` (no `conditions`; harmless, it only reaches the public copy) +
+      `ClusterExternalSecret` (`namespaceSelectors: [{}]`, every namespace incl. future ones,
+      `target.manifest` ConfigMap).
+    - Both stores reach the API at `kubernetes.default`, verified with `kube-root-ca.crt`. No
+      rule for `selfsubjectrulesreviews` (store validation): `system:basic-user` grants it,
+      and a Role could not (cluster-scoped). Validation accepts a `resourceNames` rule.
+    - `025`, not beside `015`: its kinds are ESO's. MicroShift applies roots **one at a time**
+      and gives up on one after the 10 minutes, never returning until it restarts, so before
+      `020` it would stall every first boot 10 minutes and then never apply. **A root sorts
+      after everything it needs.**
+    - Rejected: **trust-manager** (the purpose-built tool) ships only as a Helm chart, so a new
+      tool in the build and another image; ESO is already here.
   - `030-kserve/` — upstream `kserve.yaml` (`KSERVE_VER`, v0.20.0; v0.21.0 had no release
     assets and adds a DaemonSet with no nodeSelector). `kserve-cluster-resources.yaml` is not
     fetched: fourteen runtimes' images would be embedded. Only `kserve-controller-manager`
@@ -443,20 +477,20 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   **Resources rule**, every root: memory request = limit (OOM-killed at its own ceiling, never
   evicted for outgrowing a request), CPU limit = 4 × request (burst room at start-up). Pods
   stay Burstable. Upstream sets almost none of this.
-  **Images are derived from the render**: the version ARGs are the only pin. Seven today:
-  cert-manager ×3, External Secrets, `kserve-controller`, `kube-rbac-proxy`, and
-  `tritonserver:25.02-py3-igpu` (the largest). The scan reads only `image:` fields, so a
-  model's `oci://` image, and images named inside `inferenceservice-config`, go in
-  `SERVICE_IMAGES` when used.
+  **Images are derived from the render**: the version ARGs are the only pin. Seven today
+  (`015`/`025` add none): cert-manager ×3, External Secrets, `kserve-controller`,
+  `kube-rbac-proxy`, and `tritonserver:25.02-py3-igpu` (the largest). The scan reads only
+  `image:` fields, so a model's `oci://` image, and images named inside
+  `inferenceservice-config`, go in `SERVICE_IMAGES` when used.
   **Smoke test**: renders every root with `oc kustomize` and checks the workload set per root;
   External Secrets without `runAsUser`, with `runAsNonRoot`, in its own namespace and naming
   `default` nowhere outside its CRDs; `inferenceservice-config` values; every pod template and
   serving-runtime container admissible under restricted-v2; requests, limits and ratios; no
   container whose pull policy is, or defaults to, `Always`; every image qualified and embedded;
-  every `mapping.txt` reference pinned by `crio config`; no `ClusterStorageContainer`; one KServe tag. It prints
-  `du -sh` of the cache, which the eMMC pays for twice (`/usr` and containers-storage). Pods
-  KServe builds at run time are in no render: their admission and GPU access are hardware
-  questions.
+  every `mapping.txt` reference pinned by `crio config`; no `ClusterStorageContainer`; one
+  KServe tag. It prints `du -sh` of the cache, which the eMMC pays for twice
+  (`/usr` and containers-storage). Pods KServe builds at run time are in no render: their
+  admission and GPU access are hardware questions.
 - `config.toml` — project-wide bib config with a **custom kickstart** (bib then adds only
   `ostreecontainer`; `[customizations.user]`/`filesystem` cannot be combined with it):
   `text --non-interactive`, `timezone Asia/Jerusalem --utc`, static `192.168.1.10/24` gw
@@ -574,6 +608,14 @@ hardware.
    survived (`oc get deploy -A -o jsonpath`). `journalctl -u microshift | grep -i kustomization`
    shows a root still retrying — watch `040`. Every services pod's `openshift.io/scc` annotation
    should be `restricted-v2`.
+   Device CA: `oc get certificate,clusterissuer -A` Ready; `oc get secret -n cert-manager
+   device-ca-public -o jsonpath='{.data}'` has `ca.crt` only; `oc get cm -A
+   --field-selector metadata.name=ca-bundle` lists every namespace, and a new namespace
+   gets one within a minute; `oc get clustersecretstore,secretstore -A` Valid (proves
+   `system:basic-user` and `kube-root-ca.crt` hold on MicroShift); a leaf from `device-ca`
+   verifies with `openssl verify -CAfile` against the ConfigMap. `oc auth can-i get
+   secret/device-ca -n cert-manager --as=system:serviceaccount:cert-manager:device-ca-bundle-reader`
+   → no.
 5. Serve a model: first `pvc://` (model repository `oc cp`'d into a topolvm PVC), proving the
    Triton tag runs on r36.5 and an SCC-assigned UID can open the GPU (`id`, `ls -ln
    /dev/nvhost-ctrl-gpu /dev/nvmap`; if `root:video 0660`, add `supplementalGroups` on the
@@ -601,9 +643,12 @@ hardware.
 7. Later layers `FROM` the k8s image: a `bootc switch` unit for the air-gapped registry,
    greenboot health checks, a signature policy in `/etc/containers/policy.json`.
 
-**Open decisions** (confirm with the maintainer first): the Triton `-igpu` tag for JetPack
-6.2.2 and the 8Gi slice size; where InferenceServices live, and whether models get their own
-layer above `services/`; what External Secrets reads from; NVMe before real apps land;
+**Open decisions** (confirm with the maintainer first): who may get certificates from
+`device-ca` (upstream aggregates `Certificate` create into every namespace's admin/edit, so an
+`isCA` sub-CA too; approver-policy or `nameConstraints` would bound it), and whether
+`ca-bundle` belongs in every namespace or only labelled ones; the Triton `-igpu` tag for
+JetPack 6.2.2 and the 8Gi slice size; where InferenceServices live, and whether models get their
+own layer above `services/`; what External Secrets reads from; NVMe before real apps land;
 registration vs. a self-hosted runner; per-device address and hostname before a second node;
 how `/etc/flightctl/config.yaml` reaches a node, and greenboot; `bootc switch` vs. retag for the
 node's origin, and whether `stable` should wait for a hardware boot (today it moves on every green build of
@@ -674,6 +719,11 @@ the frontend's video codec, preview size and on-screen keyboard.
   `untag`ging the temporary name alone stripped the real tags too (run 33); name both.
 - jq's `a // b` treats `false` as missing. Where an explicit `false` must win over a fallback,
   test for `null`.
+- ESO's `target.manifest` (ConfigMap output) exists from v1.0 only, needs
+  `--unsafe-allow-generic-targets` and a ConfigMap-writing role; an older CRD does not know the
+  field, so depending on the client's field validation it is refused or dropped, and a Secret
+  written instead. v1.3.0 has no `external-secrets.yaml` release asset;
+  `releases/latest` is a Helm chart tag.
 - A render-time check cannot see what a webhook injects. For KServe's `uidModelcar` the only
   handle is the ConfigMap key.
 

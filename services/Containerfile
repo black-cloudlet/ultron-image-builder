@@ -14,7 +14,7 @@ RUN curl -fsSL \
       -o /usr/lib/microshift/manifests.d/010-cert-manager/cert-manager.yaml \
       "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VER}/cert-manager.yaml"
 
-ARG EXTERNAL_SECRETS_VER=v0.19.2
+ARG EXTERNAL_SECRETS_VER=v1.2.0
 RUN curl -fsSL \
       -o /usr/lib/microshift/manifests.d/020-external-secrets/external-secrets.yaml \
       "https://github.com/external-secrets/external-secrets/releases/download/${EXTERNAL_SECRETS_VER}/external-secrets.yaml"

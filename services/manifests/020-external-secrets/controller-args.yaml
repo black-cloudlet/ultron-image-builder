@@ -1,0 +1,4 @@
+# ConfigMap targets, for 025. Appended, so it survives new upstream arguments.
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --unsafe-allow-generic-targets

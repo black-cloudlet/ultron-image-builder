@@ -1,0 +1,23 @@
+# In cert-manager, where a ClusterIssuer reads its Secret. rotationPolicy Never:
+# renewal keeps the key, so existing leaves still verify.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: device-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: Cloudlet device CA
+  subject:
+    organizations:
+      - Cloudlet
+  secretName: device-ca
+  duration: 87600h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: device-ca-bootstrap

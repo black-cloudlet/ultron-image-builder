@@ -15,16 +15,26 @@
 # The strategic-merge patches still say `namespace: default`, and must: patches
 # run before the namespace transformer, so they select each resource as the
 # upstream file still spells it.
+#
+# controller-args.yaml and generic-targets.yaml: ConfigMap targets, for 025.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: external-secrets-operator
 resources:
   - namespace.yaml
   - external-secrets.yaml
+  - generic-targets.yaml
 patches:
   - path: controller.yaml
   - path: webhook.yaml
   - path: cert-controller.yaml
+  - path: controller-args.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: external-secrets
+      namespace: default
   - path: cert-controller-args.yaml
     target:
       group: apps

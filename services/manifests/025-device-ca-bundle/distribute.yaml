@@ -1,0 +1,77 @@
+# Hop 2: device-ca-public into every namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: device-ca-bundle-reader
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: device-ca-bundle-reader
+  namespace: cert-manager
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["device-ca-public"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: device-ca-bundle-reader
+  namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: device-ca-bundle-reader
+subjects:
+  - kind: ServiceAccount
+    name: device-ca-bundle-reader
+    namespace: cert-manager
+---
+# Usable from any namespace: it can reach only the public copy.
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: device-ca-bundle
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: cert-manager
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          namespace: cert-manager
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: device-ca-bundle-reader
+          namespace: cert-manager
+---
+# {} is every namespace, new ones included.
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata:
+  name: device-ca-bundle
+spec:
+  externalSecretName: device-ca-bundle
+  namespaceSelectors:
+    - {}
+  externalSecretSpec:
+    refreshInterval: 1h
+    secretStoreRef:
+      kind: ClusterSecretStore
+      name: device-ca-bundle
+    target:
+      name: ca-bundle
+      creationPolicy: Owner
+      manifest:
+        apiVersion: v1
+        kind: ConfigMap
+    data:
+      - secretKey: ca.crt
+        remoteRef:
+          key: device-ca-public
+          property: ca.crt
