@@ -25,8 +25,6 @@ if [[ -e /usr/lib/containers-image-cache ]]; then
 fi
 
 echo "== jetson-stats =="
-# pip installs into /usr here rather than /usr/local, which is machine state on
-# bootc and would not survive into the deployed image.
 if ! command -v jtop; then
 	echo "jtop is not on PATH ($PATH); where pip put jetson-stats:"
 	pip3 show -f jetson-stats 2>&1 | sed 's/^/   /'
@@ -51,6 +49,16 @@ fi
 if [[ ! -L $wants/jtop.service ]]; then
 	echo "not enabled: jtop.service"
 	ls -la "$wants" | sed 's/^/   /'
+	exit 1
+fi
+
+# The service creates its settings folder under /usr, read-only on a node. Ask
+# jtop where it is, create /var as a boot would, and expect it to resolve there.
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/jtop.conf
+cfg=$(python3 -c 'from jtop.core.config import get_config_service as g; print(g())')
+if [[ $(realpath -m "$cfg") != /var/lib/jtop || ! -d $cfg ]]; then
+	echo "jtop settings folder $cfg does not resolve to /var/lib/jtop:"
+	ls -ld "$cfg" /var/lib/jtop 2>&1 | sed 's/^/   /'
 	exit 1
 fi
 
