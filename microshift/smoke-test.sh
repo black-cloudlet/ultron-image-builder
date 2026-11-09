@@ -104,12 +104,22 @@ cm=$(jq -r --arg vol "$vol" "$P"' pod
 
 # The count printed is the one the plugin will read: the key the mount turns
 # into the file CONFIG_FILE names.
-replicas=$(jq -r --arg cm "$cm" --arg key "${cfg##*/}" '.[]
+conf=$(jq -r --arg cm "$cm" --arg key "${cfg##*/}" '.[]
 	| select(.kind == "ConfigMap" and .metadata.name == $cm)
-	| .data[$key] // empty | capture("replicas: *(?<n>[0-9]+)").n' <<<"$r")
-[[ -n $replicas ]] || fail "configMap $cm is not in the render, or its ${cfg##*/}" \
-	"names no replica count"
+	| .data[$key] // empty' <<<"$r")
+[[ -n $conf ]] || fail "configMap $cm is not in the render, or has no ${cfg##*/}"
+replicas=$(sed -n 's/^ *replicas: *\([0-9][0-9]*\).*/\1/p' <<<"$conf")
+[[ -n $replicas ]] || fail "configMap $cm's ${cfg##*/} names no replica count"
 echo "   time-slicing replicas: $replicas"
+
+# Why index: the ConfigMap. The env var would win over the file.
+grep -Eq '^ *deviceIDStrategy: *index *$' <<<"$conf" \
+	|| fail "configMap $cm's ${cfg##*/} does not set deviceIDStrategy: index"
+env=$(jq -r "$P"' pod | .containers[0].env[]?
+	| select(.name == "DEVICE_ID_STRATEGY") | .value' <<<"$r")
+[[ -z $env ]] || fail "the container sets DEVICE_ID_STRATEGY=$env, which" \
+	"overrides deviceIDStrategy in $cm"
+echo "   device ID strategy: index"
 
 # Upstream ships this one, but it is checked because the plugin cannot register
 # with kubelet without it, not to prove a merge merged.

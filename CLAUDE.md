@@ -374,6 +374,9 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     `nvidia-device-plugin.yml` is curl'd. One iGPU means one GPU pod without slicing. No memory
     isolation between replicas, so the count is a claim about the SOM's RAM; 1 disables it.
     `renameByDefault` stays off, so the resource is plain `nvidia.com/gpu`.
+    `deviceIDStrategy: index`: the default `uuid` hands the runtime `tegra`, which its csv
+    mode refuses, and no GPU container starts (seen on hardware). The smoke test fails if
+    the container sets `DEVICE_ID_STRATEGY`, which would override it.
   - A second patch sets the container's `seLinuxOptions.type: spc_t`. As `container_t`,
     SELinux denies the connect to `kubelet.sock` and the plugin loops on `Could not register
     device plugin: context deadline exceeded` (seen on hardware). Capabilities stay dropped.
