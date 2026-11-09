@@ -374,6 +374,11 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     `nvidia-device-plugin.yml` is curl'd. One iGPU means one GPU pod without slicing. No memory
     isolation between replicas, so the count is a claim about the SOM's RAM; 1 disables it.
     `renameByDefault` stays off, so the resource is plain `nvidia.com/gpu`.
+    The same file sets `flags.plugin.deviceIDStrategy: index`: under the default `uuid` the
+    plugin puts the literal `tegra` in `NVIDIA_VISIBLE_DEVICES`, and the runtime's csv mode
+    accepts only `0` or `all`, so every GPU container failed to create (`unsupported device
+    id: tegra`, Triton on jetson-1). The smoke test fails if the container sets
+    `DEVICE_ID_STRATEGY`, which would override the file.
   - A second patch sets the container's `seLinuxOptions.type: spc_t`. As `container_t`,
     SELinux denies the connect to `kubelet.sock` and the plugin loops on `Could not register
     device plugin: context deadline exceeded` (seen on hardware). Capabilities stay dropped.

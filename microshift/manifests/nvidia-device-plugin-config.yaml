@@ -2,6 +2,12 @@
 # workload waits. No memory isolation between replicas, so the count is a claim
 # about what fits in the SOM's RAM; 1 disables sharing.
 # renameByDefault is left off, so the resource stays plain nvidia.com/gpu.
+#
+# deviceIDStrategy index: the plugin passes the runtime a device ID in
+# NVIDIA_VISIBLE_DEVICES. On Tegra the default (uuid) is the literal "tegra",
+# and the NVIDIA runtime's csv mode accepts only "0" or "all", so every GPU
+# container failed to create ("unsupported device id: tegra", seen on hardware).
+# The index of the one Tegra device is "0".
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,6 +16,9 @@ metadata:
 data:
   config.yaml: |
     version: v1
+    flags:
+      plugin:
+        deviceIDStrategy: index
     sharing:
       timeSlicing:
         resources:
