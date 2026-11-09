@@ -54,6 +54,11 @@ RUN semodule -n -i /usr/share/selinux/packages/jetson-gpu.cil
 # screen may suspend on idle. Masked for every caller, not only GNOME.
 RUN systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 
+# The GPU powers off after a moment idle and the next frame waits for it: the
+# login screen's pointer stalls on a hover. Kept on, for every caller (Triton's
+# first inference after idle would wait too); ~0.4 W.
+COPY kiosk/gpu-railgate.rules /usr/lib/udev/rules.d/99-jetson-gpu-railgate.rules
+
 # The login screen's session menu offers every file here, and gdm pulls in
 # GNOME Shell's: a full desktop for whoever has the kiosk password. Keep only
 # the kiosk session (RHEL 9 names it gnome-kiosk-script, no -wayland).

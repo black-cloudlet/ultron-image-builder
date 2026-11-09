@@ -1,0 +1,7 @@
+# nvgpu powers the GPU off (rail-gates it) after a moment idle, and the next
+# frame waits for it to power back on: on the login screen, where nothing else
+# draws, the pointer stalls on every hover (jetson-1). Kept on: ~0.4 W on
+# VDD_GPU_SOC. railgate_enable, not power/control: NVIDIA's nvpmodel configs
+# write that one when they apply a mode.
+# The attribute appears when nvgpu probes: bind, or add at coldplug.
+ACTION=="add|bind", SUBSYSTEM=="platform", TEST=="railgate_enable", ATTR{railgate_enable}="0"
