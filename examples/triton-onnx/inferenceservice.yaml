@@ -1,0 +1,33 @@
+# A test InferenceService: an ONNX modelcar image from the air-gapped Quay,
+# served by the triton-igpu ClusterServingRuntime the services layer installs.
+# Applied by hand (README.md here), never by the image: CI cannot reach the
+# air-gapped Quay to embed the model, so this pod pulls it at run time.
+#
+# Change storageUri to your image. The namespace is created by hand first, so
+# the pull secret can exist before the pod asks for it. Not `kserve`: the pod
+# mutator skips that namespace, and the modelcar would never be injected.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: onnx-test
+  namespace: inference-test
+  annotations:
+    # No HPA: MicroShift has no metrics-server, so one would sit at <unknown>.
+    serving.kserve.io/autoscalerClass: none
+spec:
+  predictor:
+    minReplicas: 1
+    # Missing secret = anonymous pull, with a warning event: harmless if the
+    # Quay repository is public.
+    imagePullSecrets:
+      - name: quay-pull
+    model:
+      # Explicit: for onnx KServe defaults the protocol to v1, which
+      # triton-igpu does not list.
+      protocolVersion: v2
+      modelFormat:
+        name: onnx
+      runtime: triton-igpu
+      # Image layout: /models/<model-name>/1/model.onnx, config.pbtxt optional.
+      # Needs sh, ln, ls, sleep (busybox or ubi-minimal under it, not scratch).
+      storageUri: oci://quay.cloudlet.local/apps/onnx-model:1

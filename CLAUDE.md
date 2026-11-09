@@ -620,7 +620,13 @@ hardware.
    Triton tag runs on r36.5 and an SCC-assigned UID can open the GPU (`id`, `ls -ln
    /dev/nvhost-ctrl-gpu /dev/nvmap`; if `root:video 0660`, add `supplementalGroups` on the
    InferenceService or CRI-O's `device_ownership_from_security_context`). Then `oci://` with an
-   embedded modelcar image, proving the `uidModelcar` change.
+   embedded modelcar image, proving the `uidModelcar` change. `examples/triton-onnx/` (by hand,
+   outside the image and CI paths) does the `oci://` half with a modelcar **pulled** from the
+   air-gapped Quay: `protocolVersion: v2` set (KServe defaults `onnx` to v1, which `triton-igpu`
+   does not list), `autoscalerClass: none` (no metrics-server), a `quay-pull` secret made by hand.
+   Its `infer.py` (stdlib) builds zeros from the model's metadata; Triton's
+   `ModelInstanceInitialize … (GPU device 0)` log line is the GPU check, since it falls back to CPU
+   silently. Validated locally against the v0.20.0 CRD schema and a stub v2 server only.
 6. Kiosk, with a monitor on DP **from power-on** and UEFI's display hand-off at Never:
    `lsmod | grep -E 'nvidia_drm|nvidia_modeset'` and `/dev/dri/card*`; `loginctl
    show-session <id> -p Type` says `wayland` for the login screen and the kiosk session, and

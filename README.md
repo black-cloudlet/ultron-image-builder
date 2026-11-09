@@ -439,6 +439,7 @@ Seven images come from the services layer today: cert-manager ×3, External Secr
 
 | Workflow | Kind | Does |
 |---|---|---|
+| `examples/triton-onnx/` | by hand, not in the image: a test InferenceService pulling an ONNX modelcar from the air-gapped Quay, and a client |
 | `.github/workflows/build-image.yml` | reusable (`workflow_call`) | builds, tests and pushes **one layer** |
 | `.github/workflows/build-iso.yml` | reusable (`workflow_call`) | turns a pushed image into an **installer ISO** |
 | `.github/workflows/ultron.yml` | caller | chains them: `base` → `bound_images` → `kiosk` → `microshift` → `services` → `iso` |
@@ -715,8 +716,9 @@ Give every container requests and limits at the house ratios, keep it admissible
   can open the GPU as its assigned UID also has to be checked on the device. If not, add
   `supplementalGroups` on the InferenceService, or turn on CRI-O's
   `device_ownership_from_security_context`.
-- **No model is deployed yet.** Nothing creates an `InferenceService`, and where they will live is
-  open.
+- **No model is deployed yet.** Nothing in the image creates an `InferenceService`, and where they
+  will live is open. `examples/triton-onnx/` is a by-hand test that pulls an ONNX modelcar from the
+  air-gapped Quay.
 - **External Secrets has no external store.** Its only stores read the device CA.
 - **Anyone who may create a `Certificate` may get one from `device-ca`**, a sub-CA included.
   Upstream grants that to every namespace's `admin` and `edit` roles.
