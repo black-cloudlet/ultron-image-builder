@@ -98,8 +98,7 @@ for node in /dev/nvmap /dev/nvhost-ctrl-gpu /dev/nvgpu/igpu0/ctrl; do
 done
 
 echo "== the GPU stays powered =="
-# Another rule, or an nvpmodel mode, writing railgate_enable would undo ours
-# depending on the order they run in.
+# A second writer of railgate_enable wins or loses by run order.
 ours=/usr/lib/udev/rules.d/99-jetson-gpu-railgate.rules
 others=$(grep -rls railgate_enable /usr/lib/udev/rules.d /etc/udev/rules.d \
 	$(find /etc /usr/lib /usr/share -maxdepth 3 -name 'nvpmodel*.conf' 2>/dev/null) \
