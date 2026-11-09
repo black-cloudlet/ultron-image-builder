@@ -112,9 +112,7 @@ replicas=$(sed -n 's/^ *replicas: *\([0-9][0-9]*\).*/\1/p' <<<"$conf")
 [[ -n $replicas ]] || fail "configMap $cm's ${cfg##*/} names no replica count"
 echo "   time-slicing replicas: $replicas"
 
-# On Tegra the uuid strategy hands the runtime "tegra", which its csv mode
-# refuses; index hands it "0". The env var would win over the file, so an
-# upstream tag that starts setting it must fail here.
+# Why index: the ConfigMap. The env var would win over the file.
 grep -Eq '^ *deviceIDStrategy: *index *$' <<<"$conf" \
 	|| fail "configMap $cm's ${cfg##*/} does not set deviceIDStrategy: index"
 env=$(jq -r "$P"' pod | .containers[0].env[]?

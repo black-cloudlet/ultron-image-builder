@@ -1,13 +1,9 @@
-# One iGPU, so without replicas one pod holds nvidia.com/gpu and every other GPU
-# workload waits. No memory isolation between replicas, so the count is a claim
-# about what fits in the SOM's RAM; 1 disables sharing.
-# renameByDefault is left off, so the resource stays plain nvidia.com/gpu.
-#
-# deviceIDStrategy index: the plugin passes the runtime a device ID in
-# NVIDIA_VISIBLE_DEVICES. On Tegra the default (uuid) is the literal "tegra",
-# and the NVIDIA runtime's csv mode accepts only "0" or "all", so every GPU
-# container failed to create ("unsupported device id: tegra", seen on hardware).
-# The index of the one Tegra device is "0".
+# The device plugin's config file.
+# replicas: one iGPU, so without slicing one pod holds nvidia.com/gpu. No memory
+# isolation between replicas, so the count is a claim about the SOM's RAM; 1
+# disables sharing. renameByDefault stays off: the resource is nvidia.com/gpu.
+# deviceIDStrategy: on Tegra the default (uuid) hands the runtime "tegra", which
+# its csv mode refuses ("unsupported device id: tegra"); index hands it "0".
 apiVersion: v1
 kind: ConfigMap
 metadata:
