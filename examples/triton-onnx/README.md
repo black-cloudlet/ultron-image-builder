@@ -109,26 +109,56 @@ getent group video          # on the node: the GID those nodes have there
 
 Either way, write down what you saw: it settles an open item in `CLAUDE.md`.
 
-## 6. Ask it something
+## 6. Ask it through the API
 
 KServe creates no Ingress here, so go through the Service (`onnx-test-predictor`, port 80 →
-Triton's 8080):
+Triton's 8080). From wherever `oc` runs:
 ```bash
 oc -n inference-test port-forward svc/onnx-test-predictor 8080:80 &
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/v2/health/ready   # 200
-curl -s -X POST localhost:8080/v2/repository/index; echo                   # names, READY
-python3 examples/triton-onnx/infer.py http://localhost:8080 <model-name> 20
+API=http://localhost:8080
+M=<model-name>             # the directory under /models, not onnx-test
 ```
-`infer.py` reads the inputs from `/v2/models/<model-name>`, sends zeros of that shape (a dynamic
-dimension as 1) and prints the outputs' first values and the latency: the first request apart,
-since it warms up, then the median of the rest. Zeros prove the path, not the predictions. Run
-it with the kiosk screen on and off to see what the display costs (`tegrastats` beside it).
+On the node itself you can skip the port-forward and use cluster DNS, which also proves the
+split DNS: `API=http://onnx-test-predictor.inference-test.svc.cluster.local`.
 
-On the node itself, the same through cluster DNS, which also checks the split DNS:
+Each call below is Triton's v2 (KServe Open Inference Protocol) REST API; each proves one more
+thing. Anything but HTTP 200 means stop there, and the body says why.
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' \
-  http://onnx-test-predictor.inference-test.svc.cluster.local/v2/health/ready
+curl -s -w '%{http_code}\n' $API/v2/health/live        # 200: the server process is up
+curl -s -w '%{http_code}\n' $API/v2/health/ready       # 200: every model loaded
+curl -s $API/v2 | jq .                                 # name "triton", its version
+curl -s -X POST $API/v2/repository/index | jq .        # [{name, version "1", state "READY"}]
+curl -s -w '%{http_code}\n' $API/v2/models/$M/ready    # 200: this model loaded
+curl -s $API/v2/models/$M | jq .                       # platform onnxruntime_onnx, inputs, outputs
+curl -s $API/v2/models/$M/config | jq .instance_group  # kind KIND_GPU: on the GPU
 ```
+`KIND_CPU` in the last one is the API's view of the CPU fallback in step 5.
+
+**One inference by hand.** Take the input's `name`, `datatype` and `shape` from the metadata call
+(a `-1` is the batch: send 1) and post zeros of that size. `jq` is on the node; for one input of
+`[1,3,224,224]` FP32:
+```bash
+jq -cn --arg n input '{inputs: [{name: $n, datatype: "FP32", shape: [1,3,224,224],
+                                 data: [range(1*3*224*224) | 0]}]}' > /tmp/req.json
+curl -s -X POST -H 'Content-Type: application/json' -d @/tmp/req.json \
+  $API/v2/models/$M/infer | jq '.outputs[] | {name, datatype, shape, first: .data[:5]}'
+```
+A wrong name or shape is a 400 whose `error` names the input and the shape Triton expected.
+`infer.py` does the same for every input, from the metadata, and times it:
+```bash
+python3 examples/triton-onnx/infer.py $API $M 20
+```
+Zeros prove the path, not the predictions.
+
+**What the requests cost on the device**, without HTTP and JSON in the number:
+```bash
+curl -s $API/v2/models/$M/stats | jq '.model_stats[0] |
+  {inference_count, ms_per_infer: (.inference_stats.compute_infer.ns
+                                   / .inference_stats.compute_infer.count / 1e6)}'
+```
+`inference_count` rising with each request is the proof they reached the model;
+`ms_per_infer` is the model's own time. Compare it with the kiosk screen on and off, with
+`tegrastats` beside it.
 
 ## 7. Remove it
 
