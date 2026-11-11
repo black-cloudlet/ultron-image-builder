@@ -312,19 +312,11 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     - `sleep`, `suspend`, `hibernate`, `hybrid-sleep` targets masked: GNOME's login screen may
       suspend on idle, and a suspended node stops MicroShift. Blanking is left at GNOME's
       default (the maintainer's call).
-    - **GPU rail-gating off** (`kiosk/gpu-railgate.rules` →
-      `/usr/lib/udev/rules.d/99-jetson-gpu-railgate.rules`): nvgpu powers the GPU off after a
-      moment idle (tegrastats `GR3D_FREQ 0%@[0,0]`), and the next frame waits for it to power
-      on. On the login screen, where nothing else draws, the pointer stalled on every hover over
-      the user entry; the kiosk session never let it idle. Found on jetson-1 (2026-11): a GPU
-      `min_freq` floor did not help, low CPU, slow `ioctl`s in an `strace` of `gnome-shell`,
-      and tegrastats at `[0,0]` between hovers. Added before a hand test (`railgate_enable` = 0)
-      was reported, so the cause is inferred, not proven. Node-wide (Triton's first inference after idle
-      would wait too); costs ~0.4 W (`VDD_GPU_SOC` ~2025 mW gated, ~2430 mW idle at 305 MHz),
-      the maintainer's call. `railgate_enable`, not `power/control`, which NVIDIA's nvpmodel
-      configs write (unverified for this image). Matched on `add|bind` with
-      `TEST=="railgate_enable"`: the attribute appears when nvgpu probes. The image with it is
-      unbuilt.
+    - **GPU rail-gating off** (`kiosk/gpu-railgate.rules`, udev): an idle GPU powers off
+      (tegrastats `GR3D_FREQ 0%@[0,0]`) and the next frame waits for it, so the login screen's
+      pointer stalled over the user entry (jetson-1, 2026-11; a `min_freq` floor did not help).
+      Inferred, not proven: no hand test of `railgate_enable` = 0 was reported. Node-wide,
+      ~0.4 W. `railgate_enable`, not `power/control`, which nvpmodel writes (unchecked here). Unbuilt.
   - **Input**: `usbhid`, `hid-generic`, `evdev` built in; `hid-multitouch`, `wacom`, `hid-elan`
     as modules, so USB keyboards, mice and HID touch screens work through libinput; non-HID
     touch controllers (`CONFIG_INPUT_TOUCHSCREEN` off) do not. Layout `us` from the kickstart.
@@ -653,8 +645,8 @@ hardware.
    screen all drive the page, and whether the login screen offers an on-screen keyboard on touch;
    Shift held while Firefox restarts opens no troubleshoot dialog, Ctrl-P prints nothing;
    `journalctl -b | grep -E 'avc: +denied'` clean (`ausearch` is not installed); `systemctl
-   suspend` refused; `cat /sys/class/devfreq/*gpu*/device/railgate_enable` is `0` and tegrastats
-   never shows `GR3D_FREQ 0%@[0,0]`, and the pointer does not stall over the user entry; `tegrastats` and
+   suspend` refused; `railgate_enable` is `0` and the pointer does not stall over the user
+   entry; `tegrastats` and
    Triton's p99 latency with the screen on and off. If the frontend plays H.264, it is a black
    box.
 7. Later layers `FROM` the k8s image: a `bootc switch` unit for the air-gapped registry,
