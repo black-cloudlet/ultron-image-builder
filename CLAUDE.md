@@ -483,8 +483,9 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     (kustomize 5.4.3 standing in for `oc`, ten deliberately broken variants each caught), and
     Valkey 9.1.1 built from source with this `valkey.conf` and `users.acl` (`NOAUTH`, the probe
     user, `NOPERM`, `WRONGPASS`, `LOADING`, a SIGTERM save surviving a restart, the placeholder
-    aborting startup). Not checked: the arm64 image, topolvm's fsGroup, MicroShift applying the
-    root. Our own manifests (no upstream to curl, so no version ARG: the tag in `valkey.yaml`
+    aborting startup). That was before the rebase onto the `/usr/lib` move and the device CA;
+    since then only the valkey section has been re-run. Not checked: the arm64 image,
+    topolvm's fsGroup, MicroShift applying the root. Our own manifests (no upstream to curl, so no version ARG: the tag in `valkey.yaml`
     is the pin), namespace `valkey`. One `StatefulSet` replica,
     `docker.io/valkey/valkey:9.1.1-alpine3.24` (alpine for the eMMC: every image is paid for
     twice), a ClusterIP `Service` on 6379 and nothing else
