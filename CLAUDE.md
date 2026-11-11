@@ -503,11 +503,17 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     `grep PONG` because a server still loading answers `LOADING`, not an error exit.
     `valkey.conf` may not also hold `user` lines, and keeps `protected-mode` on: with an open
     default user it still refuses non-loopback clients, even with an explicit `bind`. **The
-    password is never in git or the image, only its hash** (unsalted SHA-256, so make the
-    password `openssl rand -hex 32`; same exposure the kiosk hash accepts). **The committed
-    hash is a placeholder**: Valkey aborts on it and the smoke test rejects it, so no services
-    image can be pushed until it is replaced:
-    `printf %s "$PW" | sha256sum | cut -d' ' -f1`. Clients get the plaintext from a Secret in
+    password is never in git or the image; its hash is in the image** (the maintainer's call,
+    as for the kiosk, knowing every registry holding the image then holds the hash; unsalted
+    SHA-256, so make the password `openssl rand -hex 32` or it falls to a dictionary attack).
+    Git holds `#@VALKEY_PASSWORD_SHA256@`. The services build gets `VALKEY_PASSWORD`, the
+    plaintext, as a `podman build --secret`, rejects an empty, missing or multi-line value
+    (a line break would be hashed, and no client sends one) as the layer's first `RUN`,
+    writes its SHA-256 over the placeholder and makes `users.acl` `0600`; the plaintext
+    reaches no layer. A placeholder left over fails the smoke test (and would abort Valkey).
+    Unlike the kiosk's, a new password **reaches installed nodes** with the next image:
+    MicroShift re-applies the root, the Secret's hash suffix changes and the pod rolls, so
+    every client's Secret must change with it. Clients get the plaintext from a Secret in
     their own namespace (`username=app`), at `valkey.valkey.svc.cluster.local:6379`. A user
     added at run time with `ACL SETUSER` lasts until the next restart (the file is read-only);
     a new user goes in `users.acl`, and the new Secret hash rolls the pod. Per-client
@@ -531,7 +537,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   every `mapping.txt` reference pinned by `crio config`; no `ClusterStorageContainer`; one
   KServe tag; and for Valkey: `user default off` present, no plaintext `>` password, `probe`
   limited to `+ping`, `nopass` only on `probe`, every other user holding a 64-digit `#` hash
-  (what rejects the placeholder), no `user` lines or `protected-mode no` in `valkey.conf`, and
+  (what rejects the placeholder), `users.acl` `0600 root`, no `user` lines or `protected-mode no` in `valkey.conf`, and
   `aclfile`'s directory mounted by the container. It prints `du -sh` of the cache, which the
   eMMC pays for twice (`/usr` and containers-storage). Pods KServe builds at run time are in
   no render: their admission and GPU access are hardware questions.
@@ -615,7 +621,9 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 (every job registers, and unregisters in `if: always()`), `OPENSHIFT_PULL_SECRET` (build-time
 image pulls, never in the image), `JETSON_SSH_PUBKEY`, `JETSON_PASSWORD_HASH`
 (`openssl passwd -6`), `JETSON_KIOSK_PASSWORD_HASH` (`openssl passwd -6`, the kiosk login; in
-the image, passed to every layer build and mounted only by `kiosk/`). Registration replaced an entitlement-cert tarball. Username/password is
+the image, passed to every layer build and mounted only by `kiosk/`), `VALKEY_PASSWORD` (the
+plaintext of Valkey's `app` user; only its SHA-256 in the image, passed to every layer build
+and mounted only by `services/`). Registration replaced an entitlement-cert tarball. Username/password is
 maintainer preference; an org ID + activation key is narrower and needed for SSO/2FA accounts.
 Credentials go through `env:`. With Simple Content Access off, register needs `--auto-attach`.
 The subscription needs OpenShift and ACM entitlements, or `rhocp` and `rhacm` never appear. A self-hosted registered RHEL 9 aarch64 runner would remove registration entirely.
@@ -708,8 +716,7 @@ node's origin, and whether `stable` should wait for a hardware boot (today it mo
 lowering kubelet's image GC thresholds below the eviction line (only matters once images are
 pulled); whether the `services/` resource sizes survive hardware (the ratios are enforced, the
 sizes are guesses); Valkey: a cache or a data store that must survive reboots (the PVC,
-`noeviction` and RDB-only assume the latter), where the password hash comes from (git, as now,
-or a build secret like the kiosk's), TLS, and whether a client gets its own prefix-scoped
+`noeviction` and RDB-only assume the latter), TLS, and whether a client gets its own prefix-scoped
 user; the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
 the frontend's video codec, preview size and on-screen keyboard.
 
@@ -812,8 +819,10 @@ sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk
 sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
+printf %s "$VALKEY_PW" > /tmp/valkey-password   # Valkey's app password, no newline
 sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
+    --secret id=valkey_password,src=/tmp/valkey-password \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 # Smoke tests are fed on stdin, the same way the workflow runs them
 podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh

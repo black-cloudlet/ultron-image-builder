@@ -150,6 +150,14 @@ jobs:
           install -m 600 /dev/null /tmp/kiosk-password-hash
           printf '%s' "$KIOSK_PASSWORD_HASH" > /tmp/kiosk-password-hash
 
+      # The plaintext; services/ mounts it and puts only its SHA-256 in the image.
+      - name: Write Valkey password
+        env:
+          VALKEY_PASSWORD: ${{ secrets.VALKEY_PASSWORD }}
+        run: |
+          install -m 600 /dev/null /tmp/valkey-password
+          printf '%s' "$VALKEY_PASSWORD" > /tmp/valkey-password
+
       - name: Build
         env:
           BUILD_ARGS: ${{ inputs.build-args }}
@@ -166,6 +174,7 @@ jobs:
           podman build "${args[@]}" \
             --secret id=pullsecret,src=/tmp/pull-secret.json \
             --secret id=kiosk_password_hash,src=/tmp/kiosk-password-hash \
+            --secret id=valkey_password,src=/tmp/valkey-password \
             -f "${{ inputs.containerfile }}" .
 
       # Per-RPM layers with mtimes zeroed, so an unchanged package keeps its digest.

@@ -7,6 +7,18 @@ FROM ${BASE_IMAGE}
 # retries a failing one for ten minutes — which covers a CRD not yet served.
 COPY services/manifests/ /usr/lib/microshift/manifests.d/
 
+# Valkey's app password, as the SHA-256 its ACL takes, root-only; the plaintext
+# never reaches a layer. Before the downloads, so a missing secret fails fast.
+# A line break would be hashed too, and no client would ever send it.
+RUN --mount=type=secret,id=valkey_password \
+    pw=/run/secrets/valkey_password && \
+    if [ ! -s "$pw" ]; then echo "VALKEY_PASSWORD is empty or missing"; exit 1; fi && \
+    if [ "$(wc -l < "$pw")" -ne 0 ] || grep -q "$(printf '\r')" "$pw"; then \
+      echo "VALKEY_PASSWORD has a line break"; exit 1; fi && \
+    acl=/usr/lib/microshift/manifests.d/050-valkey/users.acl && \
+    sed -i "s/@VALKEY_PASSWORD_SHA256@/$(sha256sum < "$pw" | cut -d' ' -f1)/" "$acl" && \
+    chmod 0600 "$acl"
+
 # Upstream installs, curl'd here and patched from the roots above, never forked.
 # Pinned, never a channel: the version ARGs are the only pin on the images too.
 ARG CERT_MANAGER_VER=v1.21.2

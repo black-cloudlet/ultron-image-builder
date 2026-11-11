@@ -527,6 +527,7 @@ if that kernel has the `sdhci-tegra` driver. If the installer finds no disk, che
 | `JETSON_SSH_PUBKEY` | Public key for the `cloudlet` user (the key itself, not a path) |
 | `JETSON_PASSWORD_HASH` | `openssl passwd -6` output for `cloudlet`: the hash, not the password |
 | `JETSON_KIOSK_PASSWORD_HASH` | `openssl passwd -6` output for `kiosk`, typed on the screen's login: the hash, not the password. Goes **into the image** (the kiosk layer); the build fails without it |
+| `VALKEY_PASSWORD` | The password of Valkey's `app` user, plaintext. Only its SHA-256 goes **into the image** (the services layer's `users.acl`); the build fails without it. A new value reaches installed nodes with the next image, so clients' Secrets must change with it |
 
 The services layer's images (`quay.io/jetstack`, `ghcr.io/external-secrets`, `docker.io/kserve`,
 `quay.io/brancz`, `nvcr.io/nvidia`) are public and pulled anonymously.

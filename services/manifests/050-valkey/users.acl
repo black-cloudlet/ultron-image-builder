@@ -1,3 +1,3 @@
 user default off -@all
-user app on #REPLACE_WITH_SHA256_HEX_OF_THE_PASSWORD ~* &* +@all
+user app on #@VALKEY_PASSWORD_SHA256@ ~* &* +@all
 user probe on nopass -@all +ping

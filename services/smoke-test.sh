@@ -167,6 +167,11 @@ echo "== valkey access control =="
 vk=/usr/lib/microshift/manifests.d/050-valkey
 acl=$vk/users.acl
 [[ -s $acl ]] || fail "missing or empty: $acl" "$(ls -la "$vk" 2>&1)"
+# Root-only, like the kiosk hash: an unsalted SHA-256 of a short password falls
+# to a dictionary attack.
+[[ $(stat -c '%a %U' "$acl") == '600 root' ]] \
+	|| fail "$acl is not 0600 root:" "$(ls -la "$vk" 2>&1)"
+echo "   users.acl: 0600 root"
 # Valkey makes the default user itself when the file does not mention it, and
 # that one is on, nopass and allowed everything: an unauthenticated write works.
 grep -Eq '^user default off( |$)' "$acl" \
@@ -186,15 +191,15 @@ extra=$(awk '$1 == "user" && $2 == "probe" { for (i = 3; i <= NF; i++)
 nopass=$(grep -E '(^| )nopass( |$)' "$acl" | grep -v '^user probe ' || true)
 [[ -z $nopass ]] || fail "a user other than probe has no password:" "$nopass"
 echo "   probe user: PING only"
-# Every other user needs a 64-digit hash. The placeholder shipped in git does
-# not match, so an image cannot be pushed until a real hash replaces it.
+# Every other user needs a 64-digit hash. Git holds @VALKEY_PASSWORD_SHA256@,
+# which the build replaces; one left over means the substitution broke.
 re='(^| )#[0-9a-f]{64}( |$)'
 users=0
 while read -r _ name rules; do
 	[[ $name == default || $name == probe ]] && continue
 	[[ $rules =~ $re ]] \
 		|| fail "valkey user $name in $acl has no #<64 hex digit sha256> password hash;" \
-			"hash one with: printf %s \"\$PW\" | sha256sum | cut -d' ' -f1"
+			"the build writes the SHA-256 of VALKEY_PASSWORD over @VALKEY_PASSWORD_SHA256@"
 	users=$((users + 1))
 	echo "   user $name: password hash"
 done < <(grep '^user ' "$acl")
