@@ -316,7 +316,8 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
       (tegrastats `GR3D_FREQ 0%@[0,0]`) and the next frame waits for it, so the login screen's
       pointer stalled over the user entry (jetson-1, 2026-11; a `min_freq` floor did not help).
       Inferred, not proven: no hand test of `railgate_enable` = 0 was reported. Node-wide,
-      ~0.4 W. `railgate_enable`, not `power/control`, which nvpmodel writes (unchecked here). Unbuilt.
+      ~0.4 W. `railgate_enable`, not `power/control`, which nvpmodel writes (unchecked here).
+      Unbuilt.
   - **Input**: `usbhid`, `hid-generic`, `evdev` built in; `hid-multitouch`, `wacom`, `hid-elan`
     as modules, so USB keyboards, mice and HID touch screens work through libinput; non-HID
     touch controllers (`CONFIG_INPUT_TOUCHSCREEN` off) do not. Layout `us` from the kickstart.
