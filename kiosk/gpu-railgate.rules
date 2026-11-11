@@ -1,4 +1,4 @@
-# An idle GPU powers off and the next frame waits for it: the login screen's
-# pointer stalled. ~0.4 W. Not power/control: nvpmodel writes that one.
-# The attribute exists once nvgpu probes: bind, or add at coldplug.
+# Keeps the GPU powered on when idle: turns off nvgpu's rail-gating.
+# Matches the GPU's platform device when the driver binds, or at coldplug if it
+# was already bound, and only once it has railgate_enable; writes 0 to it.
 ACTION=="add|bind", SUBSYSTEM=="platform", TEST=="railgate_enable", ATTR{railgate_enable}="0"
