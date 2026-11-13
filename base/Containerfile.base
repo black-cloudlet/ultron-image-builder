@@ -1,7 +1,6 @@
 # Layer 1, shared: the vendor image under a name we control, plus field tools.
 # Pinned, never a floating tag — the Tegra kmod is tied to this kernel build.
-# Red Hat's GA build; registry.redhat.io needs the workflow's RH_REGISTRY login.
-# CVEs wait for Red Hat's next build of this image: no dnf upgrade here.
+# CVE fixes come from Red Hat's rebuilds, never dnf upgrade.
 ARG BASE=registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727
 FROM ${BASE}
 

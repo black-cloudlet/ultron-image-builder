@@ -129,8 +129,7 @@ jobs:
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
           echo "building $IMAGE with tags: $tags"
 
-      # registry.redhat.io for the base layer's FROM (the vendor image); every
-      # layer logs in anyway, one code path.
+      # registry.redhat.io: the base layer's FROM.
       - name: Logins
         env:
           RH_REGISTRY_USER: ${{ secrets.RH_REGISTRY_USER }}
