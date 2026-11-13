@@ -1,0 +1,30 @@
+# Sorts after 010 and 015: its Certificate needs cert-manager's CRDs and the
+# device-ca ClusterIssuer. The pod waits for the certificate's Secret.
+# Access control is users.acl: see the smoke test's valkey section for what it
+# must hold before an image is pushed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: valkey
+
+resources:
+  - namespace.yaml
+  - certificate.yaml
+  - valkey.yaml
+
+# No hash suffix: MicroShift applies without pruning, so every suffixed Secret
+# would stay behind, old password hashes included. One name each, updated in
+# place; the pod rolls on the build-time hash in valkey.yaml instead.
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: valkey-config
+    files:
+      - valkey.conf
+
+# Holds only SHA-256s of the passwords, never a password.
+secretGenerator:
+  - name: valkey-acl
+    files:
+      - users.acl

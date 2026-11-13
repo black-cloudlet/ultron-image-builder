@@ -7,6 +7,32 @@ FROM ${BASE_IMAGE}
 # retries a failing one for ten minutes — which covers a CRD not yet served.
 COPY services/manifests/ /usr/lib/microshift/manifests.d/
 
+# Valkey's app and root passwords, as the SHA-256s its ACL takes, root-only; the
+# plaintext never reaches a layer. Before the downloads, so a bad secret fails
+# fast. 32 bytes at least: an unsalted SHA-256 of a short password falls to a
+# dictionary attack by anyone who pulls the image. A line break would be hashed
+# too, and no client would ever send it. Then the hash of the ACL and the conf
+# goes on the pod template, which is what rolls the pod when either changes.
+RUN --mount=type=secret,id=valkey_password \
+    --mount=type=secret,id=valkey_root_password \
+    vk=/usr/lib/microshift/manifests.d/050-valkey && \
+    for s in valkey_password:VALKEY_PASSWORD valkey_root_password:VALKEY_ROOT_PASSWORD; do \
+      pw=/run/secrets/${s%%:*} name=${s#*:} && \
+      if [ ! -s "$pw" ]; then echo "$name is empty or missing"; exit 1; fi && \
+      if [ "$(wc -c < "$pw")" -lt 32 ]; then \
+        echo "$name is shorter than 32 bytes (openssl rand -hex 32)"; exit 1; fi && \
+      if [ "$(wc -l < "$pw")" -ne 0 ] || grep -q "$(printf '\r')" "$pw"; then \
+        echo "$name has a line break"; exit 1; fi && \
+      sed -i "s/@${name}_SHA256@/$(sha256sum < "$pw" | cut -d' ' -f1)/" "$vk/users.acl" \
+        || exit 1 ; \
+    done && \
+    if [ "$(sha256sum < /run/secrets/valkey_password)" = \
+         "$(sha256sum < /run/secrets/valkey_root_password)" ]; then \
+      echo "VALKEY_PASSWORD and VALKEY_ROOT_PASSWORD are the same"; exit 1; fi && \
+    chmod 0600 "$vk/users.acl" && \
+    sed -i "s/@VALKEY_CONFIG_SHA256@/$(cat "$vk/users.acl" "$vk/valkey.conf" \
+      | sha256sum | cut -d' ' -f1)/" "$vk/valkey.yaml"
+
 # Upstream installs, curl'd here and patched from the roots above, never forked.
 # Pinned, never a channel: the version ARGs are the only pin on the images too.
 ARG CERT_MANAGER_VER=v1.21.2

@@ -21,8 +21,9 @@ reaches the internet.
 - **MicroShift 4.20** is the only variant. A k3s variant was built by nothing and removed; it
   is in git history
 - On the cluster: cert-manager, External Secrets, KServe (Standard mode), a Triton
-  `ClusterServingRuntime` and a per-device CA published to every namespace, from `services/`.
-  Still to come: PostgreSQL, RabbitMQ, the first `InferenceService`
+  `ClusterServingRuntime`, a per-device CA published to every namespace and Valkey (one pod,
+  the primary), from `services/`. Still to come: PostgreSQL, RabbitMQ, the first
+  `InferenceService`
 - Every container image physically bound into the OS image (zero network at first boot)
 - A kiosk: a monitor on the Jetson's DisplayPort shows the frontend in Firefox, fullscreen. It
   must be on the Jetson itself (maintainer's requirement; a separate display box was offered and
@@ -400,7 +401,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 - `microshift/manifest-images.sh` — prints every image the given manifest roots name, rendered
   with `oc kustomize` (release-info lists only the control plane, and `images:` transformers
   defeat a grep). The build embeds what it prints; `services/` uses it too.
-- `services/Containerfile` — six numbered roots under `/usr/lib/microshift/manifests.d/`, plus
+- `services/Containerfile` — seven numbered roots under `/usr/lib/microshift/manifests.d/`, plus
   every image they name. MicroShift **sorts** the roots and applies each with the equivalent of
   `kubectl apply -k`, retrying a failing one **every 10 s for 10 minutes**
   (`pkg/kustomize/kustomize.go`) — that is the ordering and what covers a CRD not yet served.
@@ -483,23 +484,97 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     spelled out, 8Gi 1:1, CPU 1 → 4, TensorRT and ONNX. Pod-wide settings such as
     `supplementalGroups` go on the InferenceService. Plans load only in this image's TensorRT:
     build them with its `trtexec` on an Orin, and rebuild when the tag moves.
+  - `050-valkey/` — **checked locally, not dispatched, not on hardware.** Locally, before
+    the rebase onto the `/usr/lib` move and the device CA: the full smoke test against this
+    root (kustomize 5.4.3 standing in for `oc`) and Valkey 9.1.1 built from source with that
+    day's `valkey.conf` and `users.acl` (`NOAUTH`, the probe user, `NOPERM`, `WRONGPASS`,
+    `LOADING`, a SIGTERM save surviving a restart, the placeholder aborting startup). Since
+    TLS and `root`: the build step against good, short, 31/32-byte, missing, identical and
+    multi-line secrets, and the smoke test's valkey and restricted-v2/resources/pull-policy
+    sections against a Python stand-in for the render, with thirteen broken variants each
+    caught. Never run: Valkey with this TLS config, `tls-auto-reload-interval`, the arm64
+    image, topolvm's fsGroup, cert-manager issuing, MicroShift applying the root.
+    Our own manifests (no upstream to curl, so no version ARG: the tag in `valkey.yaml` is the
+    pin), namespace `valkey`. One `StatefulSet` replica,
+    `docker.io/valkey/valkey:9.1.1-alpine3.24` (alpine for the eMMC: every image is paid for
+    twice); a ClusterIP `Service` `valkey` for clients and a headless `valkey-headless`, the
+    StatefulSet's `serviceName`, which gives the pod its own name. Nothing outside the pod
+    network reaches 6379 (the firewall opens only 22, 443, 6443). 512Mi 1:1, CPU 100m → 400m,
+    and `maxmemory 256mb` (half: a snapshot forks and copy-on-write can touch every page, and
+    the container is OOM-killed at its limit); `noeviction`, a data store. 1Gi PVC on the
+    default StorageClass (topolvm). RDB only, `save 3600 1 300 100`, no AOF: the eMMC has poor
+    endurance; SIGTERM saves first, inside the default 30 s grace period. restricted-v2 as
+    everywhere (no `runAsUser`; `command:` skips the image entrypoint, which only exists to
+    drop root). Secret volumes are `0444`: the SCC assigns the UID, and `0440` would read only
+    through an fsGroup another SCC might not set.
+    **TLS only** (`port 0`, `tls-port 6379`): `certificate.yaml` asks the `device-ca`
+    ClusterIssuer (`015`) for Secret `valkey-tls`, ECDSA P-256, `server auth`, naming both
+    Services in every short form and the pod's headless name; cert-manager's default 90 days,
+    renewed in place 30 days before expiry. Valkey 9.1 rereads changed files every
+    `tls-auto-reload-interval 3600` s (the directive is new in 9.1: absent from 9.0 and 8.1,
+    so a tag below 9.1 refuses to start). `tls-auth-clients no`: passwords authenticate, and
+    `tls-ca-cert-file` points at the Secret's `ca.crt` only because Valkey requires one.
+    Clients verify with the `ca-bundle` ConfigMap `025` puts in their namespace (key `ca.crt`)
+    against `valkey.valkey.svc.cluster.local`. The probes use `--tls --insecure` over
+    127.0.0.1, which no certificate names; they ask only whether the server answers. `050`
+    sorts after `015`, so the ClusterIssuer exists; the pod waits for the Secret.
+    **Access control is an ACL file, not `requirepass`**: `users.acl` in a generated Secret,
+    mounted at `/etc/valkey-acl`, with `aclfile` in `valkey.conf`. Four users: `default`
+    **off** (leave the line out and Valkey makes its own, open one: an unauthenticated write
+    works); `root`, everything; `app`, everything but `-@admin` (no `CONFIG`, `ACL`,
+    `SHUTDOWN`, `DEBUG`, `MONITOR`, `REPLICAOF`, `SAVE`; the maintainer asked for a root user,
+    so the application one lost what only root should do); and `probe`, `nopass` and `+ping`
+    only, which the probes log in as (a bare `ping` gets `NOAUTH`); they pipe through
+    `grep PONG` because a server still loading answers `LOADING`, not an error exit.
+    `valkey.conf` may not also hold `user` lines, and keeps `protected-mode` on: with an open
+    default user it still refuses non-loopback clients, even with an explicit `bind`.
+    **The passwords are never in git or the image; their hashes are in the image** (the
+    maintainer's call, as for the kiosk, knowing every registry holding the image then holds
+    them; unsalted SHA-256). Git holds `#@VALKEY_PASSWORD_SHA256@` (`app`) and
+    `#@VALKEY_ROOT_PASSWORD_SHA256@` (`root`). Only the services build gets `VALKEY_PASSWORD`
+    and `VALKEY_ROOT_PASSWORD`, the plaintexts (`valkey-passwords: true` in `ultron.yml`;
+    every other layer builds without them), as `podman build --secret`s. Its first `RUN`
+    rejects an empty, missing, shorter than 32 bytes (`openssl rand -hex 32`: a short
+    password's unsalted hash falls to a dictionary attack) or multi-line value (a line break
+    would be hashed, and no client sends one), and the two being equal; writes the SHA-256s
+    over the placeholders, makes `users.acl` `0600`, and writes the SHA-256 of `users.acl` and
+    `valkey.conf` into the pod annotation `ultron/valkey-config-sha256`. The plaintext reaches
+    no layer. **One name per generated object** (`disableNameSuffixHash`): MicroShift applies
+    without pruning, so suffixed Secrets would pile up, each with an old password's hash. The
+    annotation is what rolls the pod. Unlike the kiosk's, a new password **reaches installed
+    nodes** with the next image, so every client's Secret must change with it. Clients get the
+    plaintext from a Secret in their own namespace (`username=app`). A user added at run time
+    with `ACL SETUSER` lasts until the next restart (the file is read-only); a new user goes in
+    `users.acl` with a placeholder, a secret and a line in the build's loop. Per-client
+    isolation is a user per client restricted to a key prefix (`~billing:*`), not numbered
+    databases. Not done: client certificates, a metrics exporter, replicas.
   **Resources rule**, every root: memory request = limit (OOM-killed at its own ceiling, never
   evicted for outgrowing a request), CPU limit = 4 × request (burst room at start-up). Pods
   stay Burstable. Upstream sets almost none of this.
-  **Images are derived from the render**: the version ARGs are the only pin. Seven today
-  (`015`/`025` add none): cert-manager ×3, External Secrets, `kserve-controller`,
-  `kube-rbac-proxy`, and `tritonserver:25.02-py3-igpu` (the largest). The scan reads only
-  `image:` fields, so a model's `oci://` image, and images named inside
-  `inferenceservice-config`, go in `SERVICE_IMAGES` when used.
+  **Images are derived from the render**: the version ARGs are the only pin, except Valkey's,
+  which is the tag in its StatefulSet. Eight today (`015`/`025` add none): cert-manager ×3,
+  External Secrets, `kserve-controller`, `kube-rbac-proxy`, `valkey:9.1.1-alpine3.24` and
+  `tritonserver:25.02-py3-igpu` (the largest). The scan reads only `image:` fields, so a
+  model's `oci://` image, and images named inside `inferenceservice-config`, go in
+  `SERVICE_IMAGES` when used.
   **Smoke test**: renders every root with `oc kustomize` and checks the workload set per root;
   External Secrets without `runAsUser`, with `runAsNonRoot`, in its own namespace and naming
   `default` nowhere outside its CRDs; `inferenceservice-config` values; every pod template and
   serving-runtime container admissible under restricted-v2; requests, limits and ratios; no
   container whose pull policy is, or defaults to, `Always`; every image qualified and embedded;
   every `mapping.txt` reference pinned by `crio config`; no `ClusterStorageContainer`; one
-  KServe tag. It prints `du -sh` of the cache, which the eMMC pays for twice
-  (`/usr` and containers-storage). Pods KServe builds at run time are in no render: their
-  admission and GPU access are hardware questions.
+  KServe tag; and for Valkey (every failure lists the root): `users.acl` `0600 root`, every
+  line `user <name>`, `user default off -@all` and `user probe on nopass -@all +ping` as whole
+  lines (token checks missed ACL aliases, `%RW~` patterns and selectors), `nopass` only on
+  `probe`, no plaintext `>` password, every other user holding a 64-digit `#` hash (what
+  rejects a placeholder left over) and `root` and `app` among them; in `valkey.conf` no
+  `user` lines or `protected-mode no`, `port 0` with a `tls-port`, the three TLS files in one
+  directory, a reload interval; in the render the Secret mounted at the ACL directory carrying
+  this `users.acl`, the one at the TLS directory being a `Certificate`'s from
+  `ClusterIssuer/device-ca` that names every Service, a headless `serviceName`, and the pod
+  annotation equal to the SHA-256 of `users.acl` and `valkey.conf`. It prints `du -sh` of the cache, which the
+  eMMC pays for twice (`/usr` and containers-storage). Pods KServe builds at run time are in
+  no render: their admission and GPU access are hardware questions.
 - `config.toml` — project-wide bib config with a **custom kickstart** (bib then adds only
   `ostreecontainer`; `[customizations.user]`/`filesystem` cannot be combined with it):
   `text --non-interactive`, `timezone Asia/Jerusalem --utc`, static `192.168.1.10/24` gw
@@ -580,7 +655,9 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 (every job registers, and unregisters in `if: always()`), `OPENSHIFT_PULL_SECRET` (build-time
 image pulls, never in the image), `JETSON_SSH_PUBKEY`, `JETSON_PASSWORD_HASH`
 (`openssl passwd -6`), `JETSON_KIOSK_PASSWORD_HASH` (`openssl passwd -6`, the kiosk login; in
-the image, passed to every layer build and mounted only by `kiosk/`). Registration replaced an entitlement-cert tarball. Username/password is
+the image, passed to every layer build and mounted only by `kiosk/`), `VALKEY_PASSWORD` and
+`VALKEY_ROOT_PASSWORD` (plaintexts of Valkey's `app` and `root` users, 32 bytes or more, not
+equal; only their SHA-256s in the image, passed only to the services build). Registration replaced an entitlement-cert tarball. Username/password is
 maintainer preference; an org ID + activation key is narrower and needed for SSO/2FA accounts.
 Credentials go through `env:`. With Simple Content Access off, register needs `--auto-attach`.
 The subscription needs OpenShift and ACM entitlements, or `rhocp` and `rhacm` never appear. A self-hosted registered RHEL 9 aarch64 runner would remove registration entirely.
@@ -612,11 +689,11 @@ hardware.
    removed by the prune.
 3. Device plugin: the DaemonSet runs and allocatable `nvidia.com/gpu` equals the replica
    count. Run that many GPU pods at once and watch for OOM.
-4. Services: pods Running in `cert-manager` (3), `external-secrets-operator` (3) and `kserve`
-   (1), with no registry. A failing `runAsUser` patch shows in `oc describe rs`. Check resources
-   survived (`oc get deploy -A -o jsonpath`). `journalctl -u microshift | grep -i kustomization`
-   shows a root still retrying — watch `040`. Every services pod's `openshift.io/scc` annotation
-   should be `restricted-v2`.
+4. Services: pods Running in `cert-manager` (3), `external-secrets-operator` (3), `kserve`
+   (1) and `valkey` (1), with no registry. A failing `runAsUser` patch shows in `oc describe
+   rs`. Check resources survived (`oc get deploy -A -o jsonpath`). `journalctl -u microshift |
+   grep -i kustomization` shows a root still retrying — watch `040`. Every services pod's
+   `openshift.io/scc` annotation should be `restricted-v2`.
    Device CA: `oc get certificate,clusterissuer -A` Ready; `oc get secret -n cert-manager
    device-ca-public -o jsonpath='{.data}'` has `ca.crt` only; `oc get cm -A
    --field-selector metadata.name=ca-bundle` lists every namespace, and a new namespace
@@ -625,6 +702,19 @@ hardware.
    verifies with `openssl verify -CAfile` against the ConfigMap. `oc auth can-i get
    secret/device-ca -n cert-manager --as=system:serviceaccount:cert-manager:device-ca-bundle-reader`
    → no.
+   Valkey: `oc get certificate -n valkey` Ready; Ready (the probe user works); from a pod in
+   another namespace, `valkey-cli --tls --cacert <ca-bundle ca.crt> -h
+   valkey.valkey.svc.cluster.local ping` verifies and gets `NOAUTH`, `--user app` with the
+   password works, a wrong one gets `WRONGPASS`, `app`'s `CONFIG GET maxmemory` gets
+   `NOPERM` and `root`'s works; a plaintext connection to 6379 fails; `oc delete secret -n
+   valkey valkey-tls`, cert-manager reissues, and within an hour `openssl s_client` shows the
+   new serial with no pod restart (`tls-auto-reload-interval`);
+   `oc exec valkey-0 -- ls -ldn /data` is writable by the assigned UID (topolvm must apply the
+   fsGroup, unverified; a failed save in `INFO persistence` says otherwise); `SET`, `SAVE`,
+   delete the pod and reboot, the key survives; the log's `vm.overcommit_memory` and
+   Transparent Huge Pages warnings matter for the snapshot fork (a `sysctl.d` drop-in and
+   `transparent_hugepage=madvise` would fix them, neither is added); the arm64 variant of the
+   tag pulls and starts.
 5. Serve a model: first `pvc://` (model repository `oc cp`'d into a topolvm PVC), proving the
    Triton tag runs on r36.5 and an SCC-assigned UID can open the GPU (`id`, `ls -ln
    /dev/nvhost-ctrl-gpu /dev/nvmap`; if `root:video 0660`, add `supplementalGroups` on the
@@ -665,7 +755,9 @@ node's origin, and whether `stable` should wait for a hardware boot (today it mo
 `main`);
 lowering kubelet's image GC thresholds below the eviction line (only matters once images are
 pulled); whether the `services/` resource sizes survive hardware (the ratios are enforced, the
-sizes are guesses); the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
+sizes are guesses); Valkey: a cache or a data store that must survive reboots (the PVC,
+`noeviction` and RDB-only assume the latter), client certificates, and whether a client gets its own prefix-scoped
+user; the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
 the frontend's video codec, preview size and on-screen keyboard.
 
 ## How to work in this repo
@@ -767,8 +859,12 @@ sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk
 sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
+openssl rand -hex 32 | tr -d '\n' > /tmp/valkey-password        # Valkey's app user
+openssl rand -hex 32 | tr -d '\n' > /tmp/valkey-root-password   # and its root user
 sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
+    --secret id=valkey_password,src=/tmp/valkey-password \
+    --secret id=valkey_root_password,src=/tmp/valkey-root-password \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 # Smoke tests are fed on stdin, the same way the workflow runs them
 podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh

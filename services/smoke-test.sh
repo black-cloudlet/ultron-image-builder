@@ -72,6 +72,7 @@ expect_workloads 020-external-secrets \
 Deployment/external-secrets-cert-controller
 Deployment/external-secrets-webhook"
 expect_workloads 030-kserve "Deployment/kserve-controller-manager"
+expect_workloads 050-valkey "StatefulSet/valkey"
 
 eso=$render/020-external-secrets.json
 
@@ -156,6 +157,120 @@ echo "   storageInitializer image: $si_image"
 csc=$(jq -r '.[] | select(.kind == "ClusterStorageContainer") | .metadata.name' "$ksv")
 [[ -z $csc ]] || fail "the kserve render carries a ClusterStorageContainer:" $csc
 echo "   no ClusterStorageContainer"
+
+echo "== valkey =="
+# Valkey ships with a passwordless default user, and the pod is reachable from
+# every other pod. users.acl switches that user off and holds the SHA-256 of each
+# real password, never the password. Checked here because a wrong ACL or TLS
+# setup does not fail the build: the pod just crash-loops on a node nobody can
+# ssh into, or, worse, starts open. Every failure lists the root.
+vk=/usr/lib/microshift/manifests.d/050-valkey
+acl=$vk/users.acl
+conf=$vk/valkey.conf
+vr=$render/050-valkey.json
+vfail() { fail "$@" "-- $vk:" "$(ls -la "$vk" 2>&1)"; }
+[[ -s $acl ]] || vfail "missing or empty: $acl"
+# Root-only, like the kiosk hash: an unsalted SHA-256 of a short password falls
+# to a dictionary attack.
+[[ $(stat -c '%a %U' "$acl") == '600 root' ]] || vfail "$acl is not 0600 root"
+echo "   users.acl: 0600 root"
+# Valkey trims each line and reads every one as a user, so a line the greps
+# below cannot see (leading blanks, say) would still be a user.
+odd=$(grep -v '^user [^ ]' "$acl" | grep -v '^$' || true)
+[[ -z $odd ]] || vfail "$acl has lines that do not start with 'user <name>':" "$odd"
+# Valkey makes the default user itself when the file does not mention it, and
+# that one is on, nopass and allowed everything: an unauthenticated write works.
+grep -qx 'user default off -@all' "$acl" \
+	|| vfail "$acl has no 'user default off -@all' line; without it Valkey keeps its" \
+		"built-in default user, which needs no password and can run anything"
+echo "   default user: off"
+# The probe user exists so the pod can be checked with the default user off.
+# The whole line, not its tokens: ACL aliases (allcommands, allkeys), %RW~ key
+# patterns and (...) selectors would all grant more than PING.
+grep -qx 'user probe on nopass -@all +ping' "$acl" \
+	|| vfail "the probe user must read exactly 'user probe on nopass -@all +ping'," \
+		"which the readiness and liveness probes log in as; it reads:" \
+		"$(grep '^user probe ' "$acl" || echo nothing)"
+nopass=$(grep -E '(^| )nopass( |$)' "$acl" | grep -v '^user probe ' || true)
+[[ -z $nopass ]] || vfail "a user other than probe has no password:" "$nopass"
+echo "   probe user: PING only"
+# Plaintext after > would put a password in git and in every registry.
+! grep -Eq '(^| )>' "$acl" \
+	|| vfail "$acl holds a plaintext password (a > token); use #<sha256> instead"
+# Every other user needs a 64-digit hash. Git holds @VALKEY_*_SHA256@
+# placeholders, which the build replaces; one left over means it broke.
+re='(^| )#[0-9a-f]{64}( |$)'
+hashed=()
+while read -r _ name rules; do
+	[[ $name == default || $name == probe ]] && continue
+	[[ $rules =~ $re ]] \
+		|| vfail "valkey user $name in $acl has no #<64 hex digit sha256> password hash;" \
+			"the build writes the SHA-256 of VALKEY_PASSWORD (app) and VALKEY_ROOT_PASSWORD (root)"
+	hashed+=("$name")
+	echo "   user $name: password hash"
+done < <(grep '^user ' "$acl")
+for want in root app; do
+	[[ " ${hashed[*]} " == *" $want "* ]] || vfail "$acl has no $want user"
+done
+# The conf and the StatefulSet are separate files that have to agree. Valkey
+# refuses to start with user lines in the conf next to an aclfile.
+aclpath=$(awk '$1 == "aclfile" { print $2 }' "$conf")
+[[ $aclpath == */users.acl ]] \
+	|| vfail "valkey.conf must say aclfile <dir>/users.acl (the Secret key), got: ${aclpath:-nothing}"
+! grep -Eq '^user ' "$conf" || vfail "valkey.conf has user lines next to an aclfile; Valkey refuses to start"
+! grep -Eq '^protected-mode[[:space:]]+no' "$conf" \
+	|| vfail "valkey.conf turns protected-mode off, which is the net under the ACL"
+# TLS only: a plaintext port would carry every password in the clear.
+conf_val() { awk -v k="$1" '$1 == k { print $2 }' "$conf"; }
+[[ $(conf_val port) == 0 && -n $(conf_val tls-port) ]] \
+	|| vfail "valkey.conf must say port 0 and a tls-port, got port '$(conf_val port)'" \
+		"tls-port '$(conf_val tls-port)'"
+tlsdir=$(dirname "$(conf_val tls-cert-file)")
+for k in tls-cert-file tls-key-file tls-ca-cert-file; do
+	[[ $(conf_val $k) == "$tlsdir"/* ]] \
+		|| vfail "valkey.conf's $k '$(conf_val $k)' is not in $tlsdir with tls-cert-file"
+done
+# cert-manager renews the certificate in place; without a reload interval
+# Valkey serves the old one until it expires.
+[[ $(conf_val tls-auto-reload-interval) =~ ^[1-9][0-9]*$ ]] \
+	|| vfail "valkey.conf has no tls-auto-reload-interval above 0"
+echo "   TLS only, files in $tlsdir, reloaded"
+# The Secret volume mounted at a directory, by the name the pod spec gives it.
+mounted_secret() {
+	jq -r --arg d "$1" "$W"' workloads | podspec | . as $s
+		| .containers[] | .volumeMounts[]? | select(.mountPath == $d) | .name as $n
+		| $s.volumes[] | select(.name == $n) | .secret.secretName // empty' "$vr"
+}
+aclsecret=$(mounted_secret "$(dirname "$aclpath")")
+[[ -n $aclsecret ]] || vfail "no Secret volume is mounted at $(dirname "$aclpath"), where valkey.conf looks for $aclpath"
+[[ $(jq -r --arg n "$aclsecret" '.[] | select(.kind == "Secret" and .metadata.name == $n)
+	| .data["users.acl"] // empty' "$vr" | base64 -d) == "$(cat "$acl")" ]] \
+	|| vfail "Secret $aclsecret, mounted at $(dirname "$aclpath"), does not carry this users.acl"
+echo "   aclfile $aclpath is Secret $aclsecret"
+tlssecret=$(mounted_secret "$tlsdir")
+[[ -n $tlssecret ]] || vfail "no Secret volume is mounted at $tlsdir, where valkey.conf looks for its certificate"
+issuer=$(jq -r --arg n "$tlssecret" '.[] | select(.kind == "Certificate" and .spec.secretName == $n)
+	| "\(.spec.issuerRef.kind)/\(.spec.issuerRef.name)"' "$vr")
+[[ $issuer == ClusterIssuer/device-ca ]] \
+	|| vfail "Secret $tlssecret, mounted at $tlsdir, is not from a Certificate issued by ClusterIssuer/device-ca:" "${issuer:-no Certificate}"
+missing=$(jq -r --arg n "$tlssecret" '(.[] | select(.kind == "Certificate" and .spec.secretName == $n)
+	| .spec.dnsNames) as $d | .[] | select(.kind == "Service")
+	| "\(.metadata.name).\(.metadata.namespace).svc.cluster.local"
+	| select(. as $f | $d | index($f) | not)' "$vr")
+[[ -z $missing ]] || vfail "the valkey Certificate does not name:" $missing
+echo "   certificate: Secret $tlssecret from ClusterIssuer/device-ca, every Service named"
+# A StatefulSet's pod name resolves only through a headless governing Service.
+headless=$(jq -r "$W"' (workloads | .spec.serviceName) as $n
+	| .[] | select(.kind == "Service" and .metadata.name == $n) | .spec.clusterIP' "$vr")
+[[ $headless == None ]] || vfail "the StatefulSet's serviceName is not a headless Service in the render"
+# The generated objects keep one name (no suffix, so none is left behind), so
+# the build-time hash on the pod template is what rolls the pod.
+want=$(cat "$acl" "$conf" | sha256sum | cut -d' ' -f1)
+got=$(jq -r "$W"' workloads | .spec.template.metadata.annotations["ultron/valkey-config-sha256"] // empty' "$vr")
+[[ $got == "$want" ]] \
+	|| vfail "the pod annotation ultron/valkey-config-sha256 is '${got:-missing}', not the" \
+		"SHA-256 of users.acl and valkey.conf ($want): the pod would not roll on a change"
+echo "   pod rolls on users.acl and valkey.conf"
 
 echo "== restricted-v2 =="
 # Every pod template and serving runtime container, checked for what the SCC
