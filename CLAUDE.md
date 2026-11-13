@@ -89,27 +89,21 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    ```
    registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727
    ```
-   JetPack 6.2.3, kernel `5.14.0-687.58.1.el9_8`, built 2026-10-22, from the same source repo.
-   Replaced the Konflux build `quay.io/redhat-user-workloads/jetpack-for-rhel-tenant/rhel-98-bootc:6.2.2_5.14.0-687.42.1_090326003719`
-   (2026-11). Pulling it needs the `RH_REGISTRY_*` login in `build-image.yml`. From the
-   catalog only (not yet pulled): bootc **1.13.0** (the quay one had 1.16.4), `lvm2`, `podman`,
-   `skopeo`, `rpm-ostree-2026.1-6`, and no `nvidia-container-toolkit` RPM listed, which the
-   base smoke test settles. The smoke test also fails unless the L4T line is R36 REVISION 5.x
-   (decision 5). **Security: wait for Red Hat's rebuilds, patch nothing ourselves** (the
-   maintainer's call): at the switch its catalog health grade was D, with 5 Critical CVEs
-   (4 in `webkit2gtk3-jsc`, via `libproxy-webkitgtk4`; 1 in `ca-certificates`), all with
-   released RHEL fixes. Bump the tag when a new build is published, never `dnf upgrade`.
-   What follows was inspected on the quay 6.2.2 image (2026-09-03, arm64 only, bootc
-   1.16.4): `/etc/nv_tegra_release` is **R36 REVISION 5.0** (L4T r36.5.0); it carries the
+   JetPack 6.2.3, kernel `5.14.0-687.58.1.el9_8`. Replaced the Konflux build
+   `quay.io/…/rhel-98-bootc:6.2.2_…` (2026-11); pulled with the `RH_REGISTRY_*` login. Not yet
+   pulled: the catalog shows bootc 1.13.0 (quay's had 1.16.4) and no
+   `nvidia-container-toolkit` RPM; the base smoke test settles both, and fails unless the L4T
+   line is R36 REVISION 5.x (decision 5). **CVEs wait for Red Hat's rebuilds** (the
+   maintainer's call): bump the tag, never `dnf upgrade`. At the switch: grade D, 5 Critical,
+   all fixed in RHEL already. Pin the full tag, never `latest`. Source:
+   `gitlab.com/redhat/rhel/sst/orin-sidecar/rhel-jetpack-for-jetson-bootc`.
+   Inspected on the quay 6.2.2 image (2026-09/10): **R36 REVISION 5.0**; the
    `nvidia-jetpack-for-rhel-9.8-*` packages, `nvidia-container-toolkit-base` (CDI, no
    `nvidia-container-cli`), `nvgpu.ko`, `nvidia-ctk.service` (writes `/etc/cdi/nvidia.yaml` at
-   boot), `nvpmodel`, the console kargs, `podman`, `skopeo` and `subscription-manager`. It is
-   built on `rhel9/rhel-bootc` 9.8 (labels), whose layers are already rpm-ostree-chunked (67
-   layers); NVIDIA's part sits on top unchunked. Re-inspected 2026-10-06: it carries
-   `/usr/libexec/bootc-base-imagectl` (no RPM owns it) with a `rechunk` verb, and
-   `rpm-ostree-2026.1-6.el9_8`; no `chunkah`. So our
-   layers add **no** NVIDIA packages, CDI unit, kargs or `nvgpu.ko` guard. Pin the full tag,
-   never `latest`. Source: `gitlab.com/redhat/rhel/sst/orin-sidecar/rhel-jetpack-for-jetson-bootc`.
+   boot), `nvpmodel`, the console kargs, `podman`, `skopeo`, `subscription-manager`, and
+   `/usr/libexec/bootc-base-imagectl` (no RPM owns it) with a `rechunk` verb. Built on
+   `rhel9/rhel-bootc` 9.8, already rpm-ostree-chunked; NVIDIA's part sits on top unchunked.
+   So our layers add **no** NVIDIA packages, CDI unit, kargs or `nvgpu.ko` guard.
 5. **The BSP must match the image's L4T line**: flash the QSPI from **R36.5.x** (the staged
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
