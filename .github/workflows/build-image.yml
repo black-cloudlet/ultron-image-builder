@@ -129,8 +129,15 @@ jobs:
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
           echo "building $IMAGE with tags: $tags"
 
-      - name: Login GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+      # registry.redhat.io for the base layer's FROM (the vendor image); every
+      # layer logs in anyway, one code path.
+      - name: Logins
+        env:
+          RH_REGISTRY_USER: ${{ secrets.RH_REGISTRY_USER }}
+          RH_REGISTRY_PASSWORD: ${{ secrets.RH_REGISTRY_PASSWORD }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          printf '%s' "$RH_REGISTRY_PASSWORD" | podman login registry.redhat.io -u "$RH_REGISTRY_USER" --password-stdin
 
       # Build-time only; never written into the OS image.
       - name: Write pull secret

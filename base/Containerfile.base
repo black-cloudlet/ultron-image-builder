@@ -1,6 +1,8 @@
 # Layer 1, shared: the vendor image under a name we control, plus field tools.
 # Pinned, never a floating tag — the Tegra kmod is tied to this kernel build.
-ARG BASE=quay.io/redhat-user-workloads/jetpack-for-rhel-tenant/rhel-98-bootc:6.2.2_5.14.0-687.42.1_090326003719
+# Red Hat's GA build; registry.redhat.io needs the workflow's RH_REGISTRY login.
+# CVEs wait for Red Hat's next build of this image: no dnf upgrade here.
+ARG BASE=registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727
 FROM ${BASE}
 
 # A node has no repo and a read-only /usr: what a maintainer needs must be here.
