@@ -64,8 +64,14 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
 1. **Flashing station is RHEL, not Ubuntu.** Ubuntu + SDK Manager was evaluated and dropped.
    NVIDIA validates `flash.sh` only on Ubuntu; QSPI-only flashing works on RHEL and is
    confirmed on our hardware, but it is unsupported — say so in docs.
-2. **RHEL 9.8 + JetPack 6.x is the only GA combination.** RHEL 10 is not viable (no NVIDIA
-   RHEL 10 L4T repo; a kmod built for 5.14 will not load on 6.12). Do not propose it.
+2. **RHEL 9.8 + JetPack 6.x, not RHEL 10.** Since 2026-11 Red Hat ships a GA RHEL 10.2 image
+   too (`registry.redhat.io/nvidia/nvidia-jetpack-for-rhel10:7.2.1_6.12.0-211.72.1_…`, JetPack
+   7.2.1, L4T r39.2.1, kmod built for 6.12; r39.2.1 supports our P3701-0000). Reviewed and
+   deferred: MicroShift on RHEL 10.2 is 4.22 Technology Preview only (GA expected with 5.0),
+   every node needs a QSPI re-flash from r39.2.1 (NVIDIA validates flashing only from Ubuntu
+   22.04/24.04; QSPI-only from RHEL is untried on r39) and a reinstall, the kiosk's display fixes
+   must be found again on GNOME's Wayland-only stack, and Triton needs a CUDA 13 tag. Revisit
+   when MicroShift is GA on RHEL 10.
 3. **QSPI-only flash, then RHEL bootc on the eMMC.** QSPI carries UEFI and boot firmware only;
    the anaconda ISO installs RHEL to `mmcblk0` (64 GB eMMC). Nothing from the BSP rootfs lands
    on the device. The working command:
@@ -79,21 +85,25 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    The eMMC is a real constraint: ~58 GiB usable, and poor endurance and latency under etcd's
    fsyncs and write-heavy PVCs. The upgrade path is an M.2 NVMe (`ignoredisk
    --only-use=nvme0n1`, larger root), worth doing before real apps and a model store land.
-4. **Base image is Red Hat's JetPack-for-RHEL bootc image**, not `rhel-bootc` + NVIDIA RPMs:
+4. **Base image is Red Hat's GA JetPack-for-RHEL bootc image**, not `rhel-bootc` + NVIDIA RPMs:
    ```
-   quay.io/redhat-user-workloads/jetpack-for-rhel-tenant/rhel-98-bootc:6.2.2_5.14.0-687.42.1_090326003719
+   registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727
    ```
-   JetPack 6.2.2, kernel `5.14.0-687.42.1.el9_8`. Inspected 2026-09-03 (arm64 only, bootc
-   1.16.4): `/etc/nv_tegra_release` is **R36 REVISION 5.0** (L4T r36.5.0); it carries the
+   JetPack 6.2.3, kernel `5.14.0-687.58.1.el9_8`. Replaced the Konflux build
+   `quay.io/…/rhel-98-bootc:6.2.2_…` (2026-11); pulled with the `RH_REGISTRY_*` login. Not yet
+   pulled: the catalog shows bootc 1.13.0 (quay's had 1.16.4) and no
+   `nvidia-container-toolkit` RPM; the base smoke test settles both, and fails unless the L4T
+   line is R36 REVISION 5.x (decision 5). **CVEs wait for Red Hat's rebuilds** (the
+   maintainer's call): bump the tag, never `dnf upgrade`. At the switch: grade D, 5 Critical,
+   all fixed in RHEL already. Pin the full tag, never `latest`. Source:
+   `gitlab.com/redhat/rhel/sst/orin-sidecar/rhel-jetpack-for-jetson-bootc`.
+   Inspected on the quay 6.2.2 image (2026-09/10): **R36 REVISION 5.0**; the
    `nvidia-jetpack-for-rhel-9.8-*` packages, `nvidia-container-toolkit-base` (CDI, no
    `nvidia-container-cli`), `nvgpu.ko`, `nvidia-ctk.service` (writes `/etc/cdi/nvidia.yaml` at
-   boot), `nvpmodel`, the console kargs, `podman`, `skopeo` and `subscription-manager`. It is
-   built on `rhel9/rhel-bootc` 9.8 (labels), whose layers are already rpm-ostree-chunked (67
-   layers); NVIDIA's part sits on top unchunked. Re-inspected 2026-10-06: it carries
-   `/usr/libexec/bootc-base-imagectl` (no RPM owns it) with a `rechunk` verb, and
-   `rpm-ostree-2026.1-6.el9_8`; no `chunkah`. So our
-   layers add **no** NVIDIA packages, CDI unit, kargs or `nvgpu.ko` guard. Pin the full tag,
-   never `latest`. Source: `gitlab.com/redhat/rhel/sst/orin-sidecar/rhel-jetpack-for-jetson-bootc`.
+   boot), `nvpmodel`, the console kargs, `podman`, `skopeo`, `subscription-manager`, and
+   `/usr/libexec/bootc-base-imagectl` (no RPM owns it) with a `rechunk` verb. Built on
+   `rhel9/rhel-bootc` 9.8, already rpm-ostree-chunked; NVIDIA's part sits on top unchunked.
+   So our layers add **no** NVIDIA packages, CDI unit, kargs or `nvgpu.ko` guard.
 5. **The BSP must match the image's L4T line**: flash the QSPI from **R36.5.x** (the staged
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
@@ -479,7 +489,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     mutator skips, so no InferenceService may live in `kserve`. No Pod Security labels: one was
     tried and removed, since it only differs from restricted-v2 once a wider SCC is granted.
   - `040-triton-runtime/` — `triton-igpu`: `-py3-igpu` image (`25.02`, **unverified against
-    JetPack 6.2.2**), one `nvidia.com/gpu`, no `runAsUser`, restricted security context
+    JetPack 6.2.3**), one `nvidia.com/gpu`, no `runAsUser`, restricted security context
     spelled out, 8Gi 1:1, CPU 1 → 4, TensorRT and ONNX. Pod-wide settings such as
     `supplementalGroups` go on the InferenceService. Plans load only in this image's TensorRT:
     build them with its `trtexec` on an Orin, and rebuild when the tag moves.
@@ -576,7 +586,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `base/**`, `kiosk/**`, `microshift/**`, `services/**`, `config.toml` or the workflows, and on
   `workflow_dispatch`. **Nothing runs on a pull request.**
 
-**Secrets**: `RH_REGISTRY_USER`/`RH_REGISTRY_PASSWORD` (bib pull), `RHSM_USERNAME`/`RHSM_PASSWORD`
+**Secrets**: `RH_REGISTRY_USER`/`RH_REGISTRY_PASSWORD` (vendor base and bib pulls), `RHSM_USERNAME`/`RHSM_PASSWORD`
 (every job registers, and unregisters in `if: always()`), `OPENSHIFT_PULL_SECRET` (build-time
 image pulls, never in the image), `JETSON_SSH_PUBKEY`, `JETSON_PASSWORD_HASH`
 (`openssl passwd -6`), `JETSON_KIOSK_PASSWORD_HASH` (`openssl passwd -6`, the kiosk login; in
@@ -657,7 +667,7 @@ hardware.
 `device-ca` (upstream aggregates `Certificate` create into every namespace's admin/edit, so an
 `isCA` sub-CA too; approver-policy or `nameConstraints` would bound it), and whether
 `ca-bundle` belongs in every namespace or only labelled ones; the Triton `-igpu` tag for
-JetPack 6.2.2 and the 8Gi slice size; where InferenceServices live, and whether models get their
+JetPack 6.2.3 and the 8Gi slice size; where InferenceServices live, and whether models get their
 own layer above `services/`; what External Secrets reads from; NVMe before real apps land;
 registration vs. a self-hosted runner; per-device address and hostname before a second node;
 how `/etc/flightctl/config.yaml` reaches a node, and greenboot; `bootc switch` vs. retag for the
@@ -785,7 +795,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
 # -> output/bootiso/install.iso
 
 # On the device
-cat /etc/nv_tegra_release      # R36 REVISION 5.0
+cat /etc/nv_tegra_release      # R36 REVISION 5.x
 lsmod | grep nvgpu
 systemctl status nvidia-ctk && nvidia-ctk cdi list   # expect nvidia.com/gpu=all
 bootc status

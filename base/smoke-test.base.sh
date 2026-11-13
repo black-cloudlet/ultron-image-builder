@@ -8,6 +8,9 @@ set -euo pipefail
 
 bootc --version
 cat /etc/nv_tegra_release
+# Must match the QSPI's R36.5.x BSP, or the node hangs at boot.
+grep -qE '^# R36 \(release\), REVISION: 5\.' /etc/nv_tegra_release \
+	|| { echo "/etc/nv_tegra_release is not R36 REVISION 5.x: the QSPI BSP no longer matches"; exit 1; }
 rpm -q nvidia-jetpack-for-rhel-9.8-kmod nvidia-container-toolkit-base
 ls /usr/lib/modules/*/extra/drivers/gpu/nvgpu/nvgpu.ko
 

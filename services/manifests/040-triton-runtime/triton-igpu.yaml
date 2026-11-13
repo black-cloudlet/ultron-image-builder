@@ -1,6 +1,6 @@
 # Triton on Tegra's iGPU: upstream's kserve-tritonserver with the -igpu image,
 # one GPU time slice, no runAsUser, and TensorRT/ONNX only.
-# The 25.02 tag is unverified against JetPack 6.2.2. Plan files only load in
+# The 25.02 tag is unverified against JetPack 6.2.3. Plan files only load in
 # the TensorRT inside this image, so build them with its trtexec, on an Orin.
 # Memory is 1:1 because the iGPU allocates from the RAM the cgroup counts.
 apiVersion: serving.kserve.io/v1alpha1

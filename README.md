@@ -59,8 +59,8 @@ upgrade (see [Storage layout](#storage-layout)).
 | | |
 |---|---|
 | OS | RHEL 9.8, image mode (bootc), aarch64 |
-| Base image | Red Hat's JetPack-for-RHEL bootc image, pinned: `quay.io/redhat-user-workloads/jetpack-for-rhel-tenant/rhel-98-bootc:6.2.2_5.14.0-687.42.1_090326003719` |
-| JetPack / L4T | JetPack 6.2.2, L4T **r36.5.0**, kernel `5.14.0-687.42.1.el9_8` |
+| Base image | Red Hat's GA JetPack-for-RHEL bootc image, pinned: `registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727` |
+| JetPack / L4T | JetPack 6.2.3, L4T **r36.5.x** (the base smoke test fails otherwise), kernel `5.14.0-687.58.1.el9_8` |
 | GPU integration | Ships in the base image: the Tegra kernel modules, `nvidia-container-toolkit`, CDI (`/etc/cdi/nvidia.yaml` generated at boot) |
 | Kubernetes | MicroShift 4.20 |
 | Boot firmware | Flashed separately onto the Jetson's QSPI from a Jetson Linux **R36.5.x** BSP, which must match the image's L4T line |
@@ -523,7 +523,7 @@ if that kernel has the `sdhci-tegra` driver. If the installer finds no disk, che
 |---|---|
 | `RHSM_USERNAME` / `RHSM_PASSWORD` | Red Hat account: every job registers with subscription-manager and unregisters in an `if: always()` step |
 | `OPENSHIFT_PULL_SECRET` | Pull secret JSON from console.redhat.com/openshift/install/pull-secret. Pulls MicroShift's and the device plugin's images at build time; never written into the image |
-| `RH_REGISTRY_USER` / `RH_REGISTRY_PASSWORD` | Pull `registry.redhat.io/rhel9/bootc-image-builder` |
+| `RH_REGISTRY_USER` / `RH_REGISTRY_PASSWORD` | Pull the vendor base image and `registry.redhat.io/rhel9/bootc-image-builder` |
 | `JETSON_SSH_PUBKEY` | Public key for the `cloudlet` user (the key itself, not a path) |
 | `JETSON_PASSWORD_HASH` | `openssl passwd -6` output for `cloudlet`: the hash, not the password |
 | `JETSON_KIOSK_PASSWORD_HASH` | `openssl passwd -6` output for `kiosk`, typed on the screen's login: the hash, not the password. Goes **into the image** (the kiosk layer); the build fails without it |
@@ -564,7 +564,7 @@ reboots ejecting the media.
 3. **First login** over serial (`ttyTCU0`) or `ssh cloudlet@192.168.1.10`:
    ```
    bootc status
-   cat /etc/nv_tegra_release                          # R36 REVISION 5.0
+   cat /etc/nv_tegra_release                          # R36 REVISION 5.x
    lsmod | grep nvgpu
    systemctl status nvidia-ctk && nvidia-ctk cdi list # nvidia.com/gpu=all
    ```
@@ -711,7 +711,7 @@ Give every container requests and limits at the house ratios, keep it admissible
 
 - **Nothing has been booted on hardware** with the current image: the device plugin, the
   services and first boot are all unverified on the device.
-- **Triton's `25.02-py3-igpu` tag is unverified** against JetPack 6.2.2. Whether a predictor pod
+- **Triton's `25.02-py3-igpu` tag is unverified** against JetPack 6.2.3. Whether a predictor pod
   can open the GPU as its assigned UID also has to be checked on the device. If not, add
   `supplementalGroups` on the InferenceService, or turn on CRI-O's
   `device_ownership_from_security_context`.
