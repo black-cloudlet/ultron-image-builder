@@ -84,6 +84,8 @@ jobs:
       also-as: ultron-bootc
       # Only here: the split is redone from the whole tree.
       rechunk: true
+      # Only here: the only layer that reads them.
+      valkey-passwords: true
     secrets: inherit
     permissions: { contents: read, packages: write }
 

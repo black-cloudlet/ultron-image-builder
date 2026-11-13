@@ -1,4 +1,5 @@
-# Needs nothing from the other roots (no CRDs), so it applies on the first try.
+# Sorts after 010 and 015: its Certificate needs cert-manager's CRDs and the
+# device-ca ClusterIssuer. The pod waits for the certificate's Secret.
 # Access control is users.acl: see the smoke test's valkey section for what it
 # must hold before an image is pushed.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -8,17 +9,21 @@ namespace: valkey
 
 resources:
   - namespace.yaml
+  - certificate.yaml
   - valkey.yaml
 
-# A generated ConfigMap gets a content-hash suffix and kustomize rewrites the
-# reference in the StatefulSet, so editing valkey.conf rolls the pod by itself.
+# No hash suffix: MicroShift applies without pruning, so every suffixed Secret
+# would stay behind, old password hashes included. One name each, updated in
+# place; the pod rolls on the build-time hash in valkey.yaml instead.
+generatorOptions:
+  disableNameSuffixHash: true
+
 configMapGenerator:
   - name: valkey-config
     files:
       - valkey.conf
 
-# Holds only the SHA-256 of the password, never the password. Same hash-suffix
-# behaviour: a new hash rolls the pod.
+# Holds only SHA-256s of the passwords, never a password.
 secretGenerator:
   - name: valkey-acl
     files:

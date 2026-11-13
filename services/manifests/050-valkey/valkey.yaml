@@ -13,6 +13,23 @@ spec:
       port: 6379
       targetPort: valkey
 ---
+# The StatefulSet's governing Service: headless, so the pod gets its own name,
+# valkey-0.valkey-headless.valkey.svc.cluster.local.
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-headless
+  labels:
+    app.kubernetes.io/name: valkey
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: valkey
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -20,7 +37,7 @@ metadata:
   labels:
     app.kubernetes.io/name: valkey
 spec:
-  serviceName: valkey
+  serviceName: valkey-headless
   replicas: 1
   selector:
     matchLabels:
@@ -29,9 +46,11 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: valkey
+      # The SHA-256 of users.acl and valkey.conf, written by the build: the
+      # generated objects keep one name, so this is what rolls the pod.
+      annotations:
+        ultron/valkey-config-sha256: "@VALKEY_CONFIG_SHA256@"
     spec:
-      # Valkey saves a snapshot on SIGTERM; give it time to write.
-      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -60,13 +79,15 @@ spec:
           # The default user is off, so a bare PING would be refused. The probe
           # user (users.acl) can run PING and nothing else; the grep matters
           # because a server still loading its snapshot answers PING with an
-          # error, and that must not count as ready.
+          # error, and that must not count as ready. --insecure: the probe asks
+          # whether the server answers, over 127.0.0.1, which no certificate
+          # names; clients verify.
           readinessProbe:
             exec:
               command:
                 - sh
                 - -c
-                - valkey-cli --user probe --pass probe --no-auth-warning ping | grep -q PONG
+                - valkey-cli --tls --insecure --user probe --pass probe --no-auth-warning ping | grep -q PONG
             periodSeconds: 5
             timeoutSeconds: 2
           livenessProbe:
@@ -74,7 +95,7 @@ spec:
               command:
                 - sh
                 - -c
-                - valkey-cli --user probe --pass probe --no-auth-warning ping | grep -q PONG
+                - valkey-cli --tls --insecure --user probe --pass probe --no-auth-warning ping | grep -q PONG
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 3
@@ -88,6 +109,11 @@ spec:
             - name: acl
               mountPath: /etc/valkey-acl
               readOnly: true
+            - name: tls
+              mountPath: /etc/valkey-tls
+              readOnly: true
+      # 0444: the container's UID is assigned by the SCC, and it reads these
+      # without counting on an fsGroup. They are visible only inside this pod.
       volumes:
         - name: config
           configMap:
@@ -95,7 +121,11 @@ spec:
         - name: acl
           secret:
             secretName: valkey-acl
-            defaultMode: 0440
+            defaultMode: 0444
+        - name: tls
+          secret:
+            secretName: valkey-tls
+            defaultMode: 0444
   volumeClaimTemplates:
     - metadata:
         name: data

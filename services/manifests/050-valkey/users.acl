@@ -1,3 +1,4 @@
 user default off -@all
-user app on #@VALKEY_PASSWORD_SHA256@ ~* &* +@all
+user root on #@VALKEY_ROOT_PASSWORD_SHA256@ ~* &* +@all
+user app on #@VALKEY_PASSWORD_SHA256@ ~* &* +@all -@admin
 user probe on nopass -@all +ping

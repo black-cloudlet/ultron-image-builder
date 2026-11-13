@@ -34,6 +34,10 @@ on:
         description: split the image into reproducible per-RPM layers; top layer only
         type: boolean
         default: false
+      valkey-passwords:
+        description: pass VALKEY_PASSWORD and VALKEY_ROOT_PASSWORD as build secrets; services only
+        type: boolean
+        default: false
       runs-on:
         description: runner label; must be native aarch64
         type: string
@@ -150,20 +154,30 @@ jobs:
           install -m 600 /dev/null /tmp/kiosk-password-hash
           printf '%s' "$KIOSK_PASSWORD_HASH" > /tmp/kiosk-password-hash
 
-      # The plaintext; services/ mounts it and puts only its SHA-256 in the image.
-      - name: Write Valkey password
+      # Plaintext, unlike the kiosk hash, so only the layer that hashes them gets
+      # them; services/ puts only their SHA-256s in the image.
+      - name: Write Valkey passwords
+        if: inputs.valkey-passwords
         env:
           VALKEY_PASSWORD: ${{ secrets.VALKEY_PASSWORD }}
+          VALKEY_ROOT_PASSWORD: ${{ secrets.VALKEY_ROOT_PASSWORD }}
         run: |
           install -m 600 /dev/null /tmp/valkey-password
+          install -m 600 /dev/null /tmp/valkey-root-password
           printf '%s' "$VALKEY_PASSWORD" > /tmp/valkey-password
+          printf '%s' "$VALKEY_ROOT_PASSWORD" > /tmp/valkey-root-password
 
       - name: Build
         env:
           BUILD_ARGS: ${{ inputs.build-args }}
           TAGS: ${{ steps.meta.outputs.tags }}
+          VALKEY_PASSWORDS: ${{ inputs.valkey-passwords }}
         run: |
           args=()
+          if [ "$VALKEY_PASSWORDS" = true ]; then
+            args+=(--secret id=valkey_password,src=/tmp/valkey-password)
+            args+=(--secret id=valkey_root_password,src=/tmp/valkey-root-password)
+          fi
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             args+=(--build-arg "$line")
@@ -174,7 +188,6 @@ jobs:
           podman build "${args[@]}" \
             --secret id=pullsecret,src=/tmp/pull-secret.json \
             --secret id=kiosk_password_hash,src=/tmp/kiosk-password-hash \
-            --secret id=valkey_password,src=/tmp/valkey-password \
             -f "${{ inputs.containerfile }}" .
 
       # Per-RPM layers with mtimes zeroed, so an unchanged package keeps its digest.
