@@ -583,9 +583,10 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   test it moves neither. No MicroShift-version tag: it is the `MICROSHIFT_VERSION`
   repository variable (decision 9). The `also-as` name is validated before the build. `also-as` pushes
   the same tags under a second name: `services` is also `ghcr.io/<owner>/ultron-bootc`, the finished
-  OS under the project's name. Its digest should equal the first (same compressed layers); a
-  mismatch is a `::warning`, not a failure, since nothing builds on it. The ISO and the chain
-  use `ultron-bootc-services`.
+  OS under the project's name, output as `also-image-ref` (its own digest). Its digest should
+  equal the first (same compressed layers); a mismatch is a `::warning`, not a failure. The
+  chain builds on `ultron-bootc-services`; the ISO installs `ultron-bootc` by digest, so it
+  names no layer.
   `rechunk: true` (services only) runs `bootc-base-imagectl rechunk` between build and smoke
   test, inside the image it rewrites (that is where the tool and `rpm-ostree` are), with the
   builder's store and `storage.conf` mounted in; it wraps `rpm-ostree experimental compose
@@ -601,7 +602,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   17 images) and every other file no RPM owns, rpmdb and `/etc` edits included. So only the
   ~3 GB of RPM content splits per package; the big layer most likely changes on every build.
   Still unverified: whether two builds of unchanged content share any digests.
-  **What a node follows is not settled.** bib installs the services layer pinned by digest
+  **What a node follows is not settled.** bib installs `ultron-bootc` pinned by digest
   from GHCR, so `bootc upgrade` has nothing to re-resolve and could not reach it anyway.
   `ostreecontainer` has no `--target-imgref`. Pointing the origin at the air-gapped `stable`
   needs a one-time `bootc switch` or a retag before bib; the node also needs

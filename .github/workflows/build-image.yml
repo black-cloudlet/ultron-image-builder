@@ -42,6 +42,9 @@ on:
       image-ref:
         description: pushed image pinned by digest
         value: ${{ jobs.build.outputs.image-ref }}
+      also-image-ref:
+        description: the also-as name pinned by its own digest; empty without also-as
+        value: ${{ jobs.build.outputs.also-image-ref }}
       tag:
         value: ${{ jobs.build.outputs.tag }}
 
@@ -62,6 +65,7 @@ jobs:
       SMDEV_CONTAINER_OFF: 1
     outputs:
       image-ref: ${{ steps.push.outputs.image-ref }}
+      also-image-ref: ${{ steps.push.outputs.also-image-ref }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
@@ -221,7 +225,7 @@ jobs:
       # same manifest, so the digest is taken from the first push and the rest
       # only move a name onto it. The second name gets the same layers, already
       # compressed, so its manifest should be byte-identical; a different digest
-      # is reported, not fatal, since nothing downstream builds on that name.
+      # is reported, not fatal: what installs that name (the ISO) gets its own.
       - name: Push
         id: push
         env:
@@ -243,6 +247,7 @@ jobs:
             [ "$(cat /tmp/also-digest)" = "$(cat /tmp/digest)" ] \
               || echo "::warning::$also has digest $(cat /tmp/also-digest), $IMAGE has $(cat /tmp/digest)"
             echo "::notice title=also published as::$also@$(cat /tmp/also-digest)"
+            echo "also-image-ref=${also}@$(cat /tmp/also-digest)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Unregister

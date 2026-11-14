@@ -113,8 +113,8 @@ digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-
 | services | `services/Containerfile` | `ultron-bootc-services`, and `ultron-bootc` | four kustomize roots applied by MicroShift, 7 embedded images | no RPMs |
 
 The top layer is the finished OS, so it is also pushed as **`ghcr.io/black-cloudlet/ultron-bootc`**,
-with the same tags. That is the name to mirror and boot. The ISO still installs
-`ultron-bootc-services` by digest, which is the same manifest.
+with the same tags. That is the name to mirror and boot, and the one the ISO installs, by the
+digest this run pushed: neither the ISO nor a node's origin names a layer.
 
 **Why a chain instead of one Containerfile:** rebuild cost. The microshift layer installs RPMs
 and pulls MicroShift's whole control plane (nine images); the services layer changes far more
