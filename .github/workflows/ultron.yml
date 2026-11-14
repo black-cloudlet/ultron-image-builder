@@ -3,9 +3,7 @@
 # re-pull MicroShift's control plane and vice versa. The ISO is built from the
 # top of the chain, which is services, not microshift.
 #
-# Every version is a repository variable (Settings > Secrets and variables >
-# Actions > Variables), passed here as a build arg; the Containerfiles have no
-# defaults. An unset one arrives empty and fails the job before it registers.
+# Every version is a repository variable, passed as a build arg (CLAUDE.md 9).
 name: ultron images + installer ISO
 
 on:
@@ -107,9 +105,7 @@ jobs:
     secrets: inherit
     permissions: { contents: read, packages: write }
 
-  # The installer config is project-wide. The image installed is ultron-bootc,
-  # the top of the chain under the project's name, so neither the ISO nor a
-  # node's origin names a layer; by digest, the one this run built.
+  # Installs ultron-bootc, not a layer name, by this run's digest.
   iso:
     needs: services
     uses: ./.github/workflows/build-iso.yml

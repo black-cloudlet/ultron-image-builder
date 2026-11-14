@@ -70,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # KEY= means the repository variable behind it is unset.
+      # KEY= is an unset repository variable.
       - name: Check build args
         env:
           BUILD_ARGS: ${{ inputs.build-args }}
@@ -86,9 +86,7 @@ jobs:
           RHSM_PASSWORD: ${{ secrets.RHSM_PASSWORD }}
         run: subscription-manager register --username="$RHSM_USERNAME" --password="$RHSM_PASSWORD"
 
-      # dnf uses only the registered RHEL repos: UBI's are a subset that once
-      # shipped a podman whose netavark needed an aardvark-dns it lacked (2026-11).
-      # The builder follows RHEL 9; the images' release is locked in base/.
+      # RHEL repos only: UBI's once shipped a podman it could not install.
       - name: Container tools
         run: |
           sed -i 's/^enabled *= *1/enabled = 0/' /etc/yum.repos.d/ubi.repo
@@ -225,7 +223,7 @@ jobs:
       # same manifest, so the digest is taken from the first push and the rest
       # only move a name onto it. The second name gets the same layers, already
       # compressed, so its manifest should be byte-identical; a different digest
-      # is reported, not fatal: what installs that name (the ISO) gets its own.
+      # is reported, not fatal: the ISO installs that name's own.
       - name: Push
         id: push
         env:

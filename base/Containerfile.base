@@ -1,23 +1,19 @@
 # Layer 1, shared: the vendor image under a name we control, plus field tools.
-# Versions are repository variables, passed by ultron.yml; no defaults here.
-# BASE is pinned in full, never a floating tag: the Tegra kmod is tied to its
-# kernel. CVE fixes come from Red Hat's rebuilds, never dnf upgrade.
+# Versions come from repository variables (ultron.yml); no defaults. BASE is a
+# full tag: the Tegra kmod is tied to its kernel. No dnf upgrade.
 ARG BASE
 FROM ${BASE}
 
-# Every layer's dnf resolves against RHEL_VERSION, which must be the vendor
-# image's own release: without the lock a build takes RHEL's "9", the stream
-# that moves to each new minor (9.9 packages landed on the 9.8 base, 2026-11).
+# Lock every layer's dnf to the vendor image's release; unlocked, a build follows
+# the newest RHEL 9 minor.
 ARG RHEL_VERSION
 RUN . /etc/os-release && \
     if [ "$VERSION_ID" != "${RHEL_VERSION:?RHEL_VERSION is not set}" ]; then \
         echo "RHEL_VERSION is $RHEL_VERSION, the base image is RHEL $VERSION_ID"; exit 1; fi && \
     mkdir -p /etc/dnf/vars && echo "$RHEL_VERSION" > /etc/dnf/vars/releasever
 
-# The container toolkit, which the vendor dropped from its builds on 2026-09-03
-# while still enabling nvidia-ctk.service, gated on /usr/bin/nvidia-ctk. NVIDIA's
-# signed repo, the version the last vendor build with it carried; the repo file
-# does not stay in the image. Its preset enables nvidia-cdi-refresh, as before.
+# The vendor dropped the toolkit (2026-09) but still enables nvidia-ctk.service,
+# which needs it. From NVIDIA's signed repo; the repo file is not kept.
 ARG NVCTK_VER
 RUN printf '%s\n' '[nvidia-container-toolkit]' 'name=nvidia-container-toolkit' \
         'baseurl=https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch' \
