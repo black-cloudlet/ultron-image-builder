@@ -164,7 +164,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    | `JETPACK_IMAGE` | `BASE` | `base/Containerfile.base`, the vendor tag in full |
    | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for the `-for-rhel-N-` repos in `base/Containerfile.podman` and `microshift/`, `ksvalidator`, bib |
    | `NVIDIA_CTK_VERSION` | `NVCTK_VER` | base, `nvidia-container-toolkit-base` (`1.20.0-1` form) |
-   | `JTOP_VERSION`, `ACM_VERSION` | `JTOP_VER`, `ACM_VER` | `base/Containerfile.podman` |
+   | `JTOP_VERSION` | `JTOP_VER` | base, jetson-stats |
+   | `ACM_VERSION` | `ACM_VER` | `base/Containerfile.podman` |
    | `MICROSHIFT_VERSION`, `NVIDIA_DEVICE_PLUGIN_VERSION` | `USHIFT_VER`, `NVIDIA_DEVICE_PLUGIN_VER` | `microshift/` |
    | `CERT_MANAGER_VERSION`, `EXTERNAL_SECRETS_VERSION`, `KSERVE_VERSION` | `CERT_MANAGER_VER`, `EXTERNAL_SECRETS_VER`, `KSERVE_VER` | `services/` |
    Bump `JETPACK_IMAGE` and `RHEL_VERSION` together; a mismatch fails the base build. Not a
@@ -815,9 +816,9 @@ cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi ext
 # values (decision 9) under the same names first; the Containerfiles have no defaults.
 sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev \
     --build-arg BASE=$JETPACK_IMAGE --build-arg RHEL_VERSION=$RHEL_VERSION \
-    --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION .
+    --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION --build-arg JTOP_VER=$JTOP_VERSION .
 sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
-    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg JTOP_VER=$JTOP_VERSION --build-arg ACM_VER=$ACM_VERSION \
+    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg ACM_VER=$ACM_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
 sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \
