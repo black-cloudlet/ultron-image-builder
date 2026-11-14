@@ -68,12 +68,6 @@ jobs:
             || { echo "::error::UBI repos still enabled in /etc/yum.repos.d/ubi.repo"; exit 1; }
           dnf -y install podman jq
 
-      # UBI's default policy demands signatures for registry.redhat.io content.
-      - name: Relax image signature policy in the builder
-        run: |
-          jq 'del(.transports)' /etc/containers/policy.json > /tmp/policy.json
-          mv /tmp/policy.json /etc/containers/policy.json
-
       # Same as build-image.yml; the ISO output goes there too for space.
       - name: Put container storage and ISO output on the runner's disk
         run: |

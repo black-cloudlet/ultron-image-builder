@@ -40,8 +40,10 @@ RUN systemctl enable copy-embedded-images.service
 
 # Edge Manager agent from ACM; ACM_VER matches the hub. No weak deps.
 ARG ACM_VER
-RUN dnf install -y --setopt=install_weak_deps=False \
-        --enablerepo="rhacm-${ACM_VER:?ACM_VER is not set}-for-rhel-$(cut -d. -f1 /etc/dnf/vars/releasever)-$(uname -m)-rpms" \
+ARG RHEL_VERSION
+RUN : "${RHEL_VERSION:?RHEL_VERSION is not set}" && \
+    dnf install -y --setopt=install_weak_deps=False \
+        --enablerepo="rhacm-${ACM_VER:?ACM_VER is not set}-for-rhel-${RHEL_VERSION%%.*}-$(uname -m)-rpms" \
         flightctl-agent && \
     systemctl enable flightctl-agent.service && \
     dnf clean all

@@ -8,9 +8,11 @@ FROM ${BASE_IMAGE}
 # than config-manager, so dnf-plugins-core need not be in the base.
 # openshift-clients is `oc` — the microshift RPM ships no client.
 ARG USHIFT_VER
-RUN dnf install -y \
-        --enablerepo="rhocp-${USHIFT_VER:?USHIFT_VER is not set}-for-rhel-$(cut -d. -f1 /etc/dnf/vars/releasever)-$(uname -m)-rpms" \
-        --enablerepo="fast-datapath-for-rhel-$(cut -d. -f1 /etc/dnf/vars/releasever)-$(uname -m)-rpms" \
+ARG RHEL_VERSION
+RUN : "${RHEL_VERSION:?RHEL_VERSION is not set}" && \
+    dnf install -y \
+        --enablerepo="rhocp-${USHIFT_VER:?USHIFT_VER is not set}-for-rhel-${RHEL_VERSION%%.*}-$(uname -m)-rpms" \
+        --enablerepo="fast-datapath-for-rhel-${RHEL_VERSION%%.*}-$(uname -m)-rpms" \
         dnsmasq firewalld jq microshift microshift-release-info openshift-clients && \
     systemctl enable microshift && \
     dnf clean all

@@ -124,8 +124,10 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    subscription-manager runs in container mode and `dnf` takes `$releasever` from the image,
    RHEL's `9`, so run 5 (2026-11-11) put NetworkManager, bind and sos from 9.9 onto the 9.8
    base. `base/` writes `RHEL_VERSION` to `/etc/dnf/vars/releasever` after checking it is the
-   vendor image's own `VERSION_ID`; every layer inherits it, and reads its major for the
-   `-for-rhel-N-` repo names (decision 9). Images go to
+   vendor image's own `VERSION_ID`; every layer inherits it. The builder keeps RHEL's
+   default signature policy: `registry.redhat.io` pulls (the vendor base, bib) must carry a
+   Red Hat GPG signature, as the MicroShift layer's embeds already did under the vendor
+   image's own policy. Images go to
    GHCR, then into the air-gapped registry by hand. Pattern from
    `redhat-et/edge-ai-image-pipelines` (Apache-2.0). The host's `/mnt` is mounted as
    `/scratch`, with `/var/lib/containers`, `/var/tmp` and the ISO output bound onto it — for
@@ -160,7 +162,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    | Variable | Build arg | Used in |
    |---|---|---|
    | `JETPACK_IMAGE` | `BASE` | `base/Containerfile.base`, the vendor tag in full |
-   | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for repo names, `ksvalidator`, bib |
+   | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for the `-for-rhel-N-` repos in `base/Containerfile.podman` and `microshift/`, `ksvalidator`, bib |
    | `NVIDIA_CTK_VERSION` | `NVCTK_VER` | base, `nvidia-container-toolkit-base` (`1.20.0-1` form) |
    | `JTOP_VERSION`, `ACM_VERSION` | `JTOP_VER`, `ACM_VER` | `base/Containerfile.podman` |
    | `MICROSHIFT_VERSION`, `NVIDIA_DEVICE_PLUGIN_VERSION` | `USHIFT_VER`, `NVIDIA_DEVICE_PLUGIN_VER` | `microshift/` |
@@ -808,7 +810,7 @@ sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:
     --build-arg BASE=$JETPACK_IMAGE --build-arg RHEL_VERSION=$RHEL_VERSION \
     --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION .
 sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
-    --build-arg JTOP_VER=$JTOP_VERSION --build-arg ACM_VER=$ACM_VERSION \
+    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg JTOP_VER=$JTOP_VERSION --build-arg ACM_VER=$ACM_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
 sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \
@@ -816,7 +818,7 @@ sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk
     --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
 sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
-    --build-arg USHIFT_VER=$MICROSHIFT_VERSION \
+    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg USHIFT_VER=$MICROSHIFT_VERSION \
     --build-arg NVIDIA_DEVICE_PLUGIN_VER=$NVIDIA_DEVICE_PLUGIN_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
 sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \

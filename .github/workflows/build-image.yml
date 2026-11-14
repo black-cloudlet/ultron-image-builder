@@ -92,12 +92,6 @@ jobs:
             || { echo "::error::UBI repos still enabled in /etc/yum.repos.d/ubi.repo"; exit 1; }
           dnf -y install podman jq
 
-      # UBI's default policy demands signatures for registry.redhat.io content.
-      - name: Relax image signature policy in the builder
-        run: |
-          jq 'del(.transports)' /etc/containers/policy.json > /tmp/policy.json
-          mv /tmp/policy.json /etc/containers/policy.json
-
       # podman must end up on native overlay with the native diff, or every
       # layer commit walks the whole rootfs (~2 min each). The job container's
       # / is overlayfs, unusable as an upperdir, hence the bind onto /scratch,

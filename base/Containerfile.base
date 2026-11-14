@@ -8,7 +8,6 @@ FROM ${BASE}
 # Every layer's dnf resolves against RHEL_VERSION, which must be the vendor
 # image's own release: without the lock a build takes RHEL's "9", the stream
 # that moves to each new minor (9.9 packages landed on the 9.8 base, 2026-11).
-# Later layers read the major from this file for their repo names.
 ARG RHEL_VERSION
 RUN . /etc/os-release && \
     if [ "$VERSION_ID" != "${RHEL_VERSION:?RHEL_VERSION is not set}" ]; then \

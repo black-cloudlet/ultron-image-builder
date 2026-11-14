@@ -50,6 +50,7 @@ jobs:
       smoke-test: base/smoke-test.podman.sh
       build-args: |
         BASE_IMAGE=${{ needs.base.outputs.image-ref }}
+        RHEL_VERSION=${{ vars.RHEL_VERSION }}
         JTOP_VER=${{ vars.JTOP_VERSION }}
         ACM_VER=${{ vars.ACM_VERSION }}
     secrets: inherit
@@ -77,6 +78,7 @@ jobs:
       smoke-test: microshift/smoke-test.sh
       build-args: |
         BASE_IMAGE=${{ needs.kiosk.outputs.image-ref }}
+        RHEL_VERSION=${{ vars.RHEL_VERSION }}
         USHIFT_VER=${{ vars.MICROSHIFT_VERSION }}
         NVIDIA_DEVICE_PLUGIN_VER=${{ vars.NVIDIA_DEVICE_PLUGIN_VERSION }}
     secrets: inherit
