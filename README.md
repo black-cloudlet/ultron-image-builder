@@ -61,7 +61,7 @@ upgrade (see [Storage layout](#storage-layout)).
 | OS | RHEL 9.8, image mode (bootc), aarch64 |
 | Base image | Red Hat's GA JetPack-for-RHEL bootc image, pinned: `registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727` |
 | JetPack / L4T | JetPack 6.2.3, L4T **r36.5.x** (the base smoke test fails otherwise), kernel `5.14.0-687.58.1.el9_8` |
-| GPU integration | Ships in the base image: the Tegra kernel modules, `nvidia-container-toolkit`, CDI (`/etc/cdi/nvidia.yaml` generated at boot) |
+| GPU integration | The vendor image ships the Tegra kernel modules and the unit generating CDI (`/etc/cdi/nvidia.yaml`) at boot; the base layer adds `nvidia-container-toolkit-base` 1.20.0, which that unit runs |
 | Kubernetes | MicroShift 4.20 |
 | Boot firmware | Flashed separately onto the Jetson's QSPI from a Jetson Linux **R36.5.x** BSP, which must match the image's L4T line |
 
@@ -125,19 +125,23 @@ changes rarely, and putting it on top instead would reinstall Firefox on every s
 
 ### base: the vendor image, republished
 
-`base/Containerfile.base` is `FROM` the pinned JetPack-for-RHEL tag plus `bootc container lint`,
-nothing else. It exists so the pin lives in exactly one file, so the air-gapped registry gets a
-name we control, and so its digest stays a pure republish of what Red Hat ships.
+`base/Containerfile.base` is `FROM` the pinned JetPack-for-RHEL tag, plus three things: a
+`releasever` file locking every layer's `dnf` to RHEL 9.8 (the vendor image's release; without
+it a build follows the newest RHEL 9), NVIDIA's container toolkit, and the field tools. It exists
+so the pin lives in exactly one file and the air-gapped registry gets a name we control.
 
-The vendor image already contains everything the GPU needs: the Tegra kernel modules
-(`nvgpu.ko`), the JetPack user space, `nvidia-container-toolkit`, the service that writes the CDI
-spec at boot, the console kernel arguments, and `podman`/`skopeo`. So no layer here adds NVIDIA
-packages. The tag is pinned in full and never `latest`, because the kernel modules are built
-against that exact kernel.
+The vendor image contains the Tegra kernel modules (`nvgpu.ko`), the JetPack user space, the
+service that writes the CDI spec at boot, the console kernel arguments, and `podman`/`skopeo`.
+It no longer contains the container toolkit that service runs: Red Hat dropped it from its
+builds in September 2026 and the unit then skips silently. So this layer installs
+`nvidia-container-toolkit-base` 1.20.0, the version the last vendor build shipped, from NVIDIA's
+signed repository; it is the one NVIDIA package added here. The tag is pinned in full and never
+`latest`, because the kernel modules are built against that exact kernel.
 
 **Smoke test** (`base/smoke-test.base.sh`) checks the vendor image still is what we expect: bootc,
-`/etc/nv_tegra_release`, the kmod and container-toolkit packages, `nvgpu.ko`, `skopeo`, `podman`,
-and `lvm2` (the root filesystem is on LVM and MicroShift's storage needs `vgs`).
+`/etc/nv_tegra_release` (R36.5.x, to match the QSPI), the kmod and container-toolkit packages,
+that the vendor's CDI unit finds the toolkit and is enabled, `nvgpu.ko`, `skopeo`, `podman`, and
+`lvm2` (the root filesystem is on LVM and MicroShift's storage needs `vgs`).
 
 ### bound-images: embedding machinery, jtop and the Edge Manager agent
 
@@ -454,8 +458,8 @@ arm64 is not viable) **inside a `registry.access.redhat.com/ubi9/ubi` container*
 container supplies RHEL's `podman`, and a `subscription-manager register` inside it supplies
 entitlement for the RHEL and OpenShift repos. Everything is installed from those repos locked
 to RHEL 9.8, the base image's release, with UBI's own repos off: they follow the newest RHEL 9
-and once shipped a podman that could not be installed. The layer builds get the same 9.8
-repos.
+and once shipped a podman that could not be installed. That lock is the builder's own; the
+layer builds get theirs from a `releasever` file in the base layer.
 
 The runner's `/mnt` disk is mounted as `/scratch`, and container storage, `/var/tmp` and the ISO
 output go there. That is for space (the embedded images run to gigabytes), and so podman can use

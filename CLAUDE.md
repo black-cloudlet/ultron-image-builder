@@ -89,11 +89,18 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    ```
    registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727
    ```
-   JetPack 6.2.3, kernel `5.14.0-687.58.1.el9_8`. Replaced the Konflux build
-   `quay.io/…/rhel-98-bootc:6.2.2_…` (2026-11); pulled with the `RH_REGISTRY_*` login. Not yet
-   pulled: the catalog shows bootc 1.13.0 (quay's had 1.16.4) and no
-   `nvidia-container-toolkit` RPM; the base smoke test settles both, and fails unless the L4T
-   line is R36 REVISION 5.x (decision 5). **CVEs wait for Red Hat's rebuilds** (the
+   JetPack 6.2.3, kernel `5.14.0-687.58.1.el9_8`, RHEL 9.8 throughout, L4T **R36.5.2**, bootc
+   1.13.0 (run 7). Replaced the Konflux build `quay.io/…/rhel-98-bootc:6.2.2_…` (2026-11);
+   pulled with the `RH_REGISTRY_*` login. The smoke test fails unless the L4T line is R36
+   REVISION 5.x (decision 5). **No container toolkit**: Red Hat dropped
+   `nvidia-container-toolkit-base` from every build after Konflux
+   `6.2.2_…_090326003719` (bisected: `…_090326134659`, same day, is the first without), GA
+   included, but still enables `nvidia-ctk.service` with `ConditionPathExists=/usr/bin/nvidia-ctk`,
+   so without it the unit skips silently and no CDI spec exists. `base/` installs
+   `nvidia-container-toolkit-base-1.20.0-1` (what that last build carried) from NVIDIA's repo,
+   `gpgcheck` and `repo_gpgcheck` on, the repo file not left behind. The later Konflux 6.2.3
+   builds are RHEL **9.9** userspace on a 9.8 kernel (`redhat.version-id=9.9`); not used.
+   **CVEs wait for Red Hat's rebuilds** (the
    maintainer's call): bump the tag, never `dnf upgrade`. At the switch: grade D, 5 Critical,
    all fixed in RHEL already. Pin the full tag, never `latest`. Source:
    `gitlab.com/redhat/rhel/sst/orin-sidecar/rhel-jetpack-for-jetson-bootc`.
@@ -103,7 +110,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    boot), `nvpmodel`, the console kargs, `podman`, `skopeo`, `subscription-manager`, and
    `/usr/libexec/bootc-base-imagectl` (no RPM owns it) with a `rechunk` verb. Built on
    `rhel9/rhel-bootc` 9.8, already rpm-ostree-chunked; NVIDIA's part sits on top unchunked.
-   So our layers add **no** NVIDIA packages, CDI unit, kargs or `nvgpu.ko` guard.
+   So our layers add no NVIDIA packages but the toolkit, and no CDI unit, kargs or `nvgpu.ko`
+   guard.
 5. **The BSP must match the image's L4T line**: flash the QSPI from **R36.5.x** (the staged
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
@@ -113,9 +121,11 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    it registers first, runs `subscription-manager release --set=9.8` and disables
    `ubi.repo` before installing podman. UBI's repos have no 9.8 path, only the moving `9`
    stream: 9.9's podman needs a netavark that requires `aardvark-dns >= 3:1.17`, UBI had
-   only `2:1.17.1` (2026-11), and no podman would install. Locked, the layers' `dnf
-   install`s get 9.8 too, since podman hands builds the builder's repos; before, they
-   pulled 9.9 packages onto the 9.8 base. Move both pins with the vendor image. Images go to
+   only `2:1.17.1` (2026-11), and no podman would install. The builder's lock does **not**
+   reach a build: inside one, subscription-manager runs in container mode and `dnf` takes
+   `$releasever` from the image, RHEL's `9`, so run 5 (2026-11-11) put NetworkManager, bind
+   and sos from 9.9 onto the 9.8 base. `base/` writes `9.8` to `/etc/dnf/vars/releasever`,
+   which every layer inherits. Move all three pins with the vendor image. Images go to
    GHCR, then into the air-gapped registry by hand. Pattern from
    `redhat-et/edge-ai-image-pipelines` (Apache-2.0). The host's `/mnt` is mounted as
    `/scratch`, with `/var/lib/containers`, `/var/tmp` and the ISO output bound onto it — for
@@ -163,9 +173,11 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 
 ### Image + ISO pipeline
 
-- `base/Containerfile.base` — the pinned vendor image, field tools and `bootc container lint`.
-  Its smoke test checks the vendor image: `skopeo`, `podman`, and `lvm2` (root is on an LV and
-  LVMS needs `vgs`; nothing here installs it).
+- `base/Containerfile.base` — the pinned vendor image, the 9.8 `releasever` lock, the container
+  toolkit (decision 4), field tools and `bootc container lint`. Its smoke test checks the vendor
+  image: `skopeo`, `podman`, and `lvm2` (root is on an LV and LVMS needs `vgs`; nothing here
+  installs it); and that `nvidia-ctk.service`'s `ConditionPathExists` binary exists and it and
+  `nvidia-cdi-refresh.{path,service}` are enabled, as on the last vendor build with the toolkit.
   - Field tools (a node has no repo and a read-only `/usr`): `tcpdump`, `mtr`, `nmap-ncat`,
     `pciutils`, `strace`, `sysstat`, `tmux`, `usbutils`; `bind-utils`, `ethtool`, `lsof`,
     `NetworkManager-tui`, `psmisc` and `sos` come with the vendor image, listed so a bump cannot
@@ -612,7 +624,9 @@ hardware.
 
 1. Dispatch `ultron.yml`, `dd` the ISO, boot the devkit (QSPI from R36.5.x). Check
    `bootc status` (expect a digest-pinned GHCR origin, which cannot upgrade), `lsmod | grep
-   nvgpu`, `nvidia-ctk cdi list` → `nvidia.com/gpu=all`, a GPU container, `systemctl
+   nvgpu`, `nvidia-ctk cdi list` → `nvidia.com/gpu=all` (the vendor's unit writes `/etc/cdi`,
+   the toolkit's `nvidia-cdi-refresh` `/var/run/cdi`, as on the old image; neither failed),
+   a GPU container, `systemctl
    is-enabled bootc-fetch-apply-updates.timer`, whether `jtop` works, and that
    `journalctl -b -u greenboot-healthcheck` ends green after a `bootc upgrade` (the
    rollback above). Separately, dispatch twice with no change and compare the `services`
