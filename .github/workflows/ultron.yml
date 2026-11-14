@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The pinned vendor image, republished. Shared by every variant.
+  # The pinned vendor image, plus field tools and jtop. Shared by every variant.
   base:
     uses: ./.github/workflows/build-image.yml
     with:
@@ -31,6 +31,7 @@ jobs:
         BASE=${{ vars.JETPACK_IMAGE }}
         RHEL_VERSION=${{ vars.RHEL_VERSION }}
         NVCTK_VER=${{ vars.NVIDIA_CTK_VERSION }}
+        JTOP_VER=${{ vars.JTOP_VERSION }}
     secrets: inherit
     permissions: { contents: read, packages: write }
 
@@ -48,7 +49,6 @@ jobs:
       build-args: |
         BASE_IMAGE=${{ needs.base.outputs.image-ref }}
         RHEL_VERSION=${{ vars.RHEL_VERSION }}
-        JTOP_VER=${{ vars.JTOP_VERSION }}
         ACM_VER=${{ vars.ACM_VERSION }}
     secrets: inherit
     permissions: { contents: read, packages: write }

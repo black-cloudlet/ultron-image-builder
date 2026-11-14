@@ -137,8 +137,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    reports `Native Overlay Diff:true`.
 7. **Five layers for microshift, one directory per Kubernetes variant.**
    - `base/Containerfile.base` republishes the pinned vendor image under our name, plus field
-     tools (`tcpdump` and the like).
-   - `base/Containerfile.podman` adds the physically-bound-images machinery and `jtop`.
+     tools (`tcpdump` and the like) and `jtop`.
+   - `base/Containerfile.podman` adds the physically-bound-images machinery.
      Published as `ultron-bootc-bound-images` from CI job `bound_images` (an underscore:
      `needs.bound-images` parses as a subtraction and resolves to nothing).
    - `kiosk/` adds GDM, GNOME Kiosk's script session, Firefox and the `kiosk` user. Shared,
@@ -153,7 +153,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    `ultron-bootc-<name>` and the next builds on its **digest**. CI is two reusable
    workflows (`build-image.yml`, `build-iso.yml`) plus `ultron.yml`, chaining base →
    bound-images → kiosk → microshift → services → ISO. The build context is the repo root. Every
-   layer registers with subscription-manager, even the one that installs nothing: one code path.
+   layer registers with subscription-manager, even `services/`, which installs no RPMs: one code path.
 8. **NVIDIA BSP download stays manual** (documented in `README.md`). Scripting it was fragile.
 9. **Every version is a GitHub repository variable** (Settings → Secrets and variables →
    Actions → Variables), the only place it is set: `ultron.yml` passes each as a build arg,
@@ -164,7 +164,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    | `JETPACK_IMAGE` | `BASE` | `base/Containerfile.base`, the vendor tag in full |
    | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for the `-for-rhel-N-` repos in `base/Containerfile.podman` and `microshift/`, `ksvalidator`, bib |
    | `NVIDIA_CTK_VERSION` | `NVCTK_VER` | base, `nvidia-container-toolkit-base` (`1.20.0-1` form) |
-   | `JTOP_VERSION`, `ACM_VERSION` | `JTOP_VER`, `ACM_VER` | `base/Containerfile.podman` |
+   | `JTOP_VERSION` | `JTOP_VER` | base, jetson-stats |
+   | `ACM_VERSION` | `ACM_VER` | `base/Containerfile.podman` |
    | `MICROSHIFT_VERSION`, `NVIDIA_DEVICE_PLUGIN_VERSION` | `USHIFT_VER`, `NVIDIA_DEVICE_PLUGIN_VER` | `microshift/` |
    | `CERT_MANAGER_VERSION`, `EXTERNAL_SECRETS_VERSION`, `KSERVE_VERSION` | `CERT_MANAGER_VER`, `EXTERNAL_SECRETS_VER`, `KSERVE_VER` | `services/` |
    Bump `JETPACK_IMAGE` and `RHEL_VERSION` together; a mismatch fails the base build. Not a
@@ -191,7 +192,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 ### Image + ISO pipeline
 
 - `base/Containerfile.base` — the pinned vendor image, the 9.8 `releasever` lock, the container
-  toolkit (decision 4), field tools and `bootc container lint`. Its smoke test checks the vendor
+  toolkit (decision 4), field tools, `jtop` and `bootc container lint`. Its smoke test checks the vendor
   image: `skopeo`, `podman`, and `lvm2` (root is on an LV and LVMS needs `vgs`; nothing here
   installs it); and that `nvidia-ctk.service`'s `ConditionPathExists` binary exists and it and
   `nvidia-cdi-refresh.{path,service}` are enabled, as on the last vendor build with the toolkit.
@@ -200,19 +201,25 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     `NetworkManager-tui`, `psmisc` and `sos` come with the vendor image, listed so a bump cannot
     drop them. ~12 MiB. `sar` logs to `/var/log/sa` every 10 min for 28 days (RHEL's preset).
     Not added: `htop`/`iftop` (EPEL), `tshark`, `nvme-cli` (with the NVMe).
-- `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
-  - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
-    from `base/physically-bound-images/`.
-  - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr` (`/usr/local`
-    is machine state on bootc) `--only-binary=:all:` (the sdist's `setup.py` would install the
-    unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so this layer needs
+  - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr`
+    `--only-binary=:all:` (the sdist's `setup.py` would install the
+    unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so the layer needs
     entitlement. `jtop` is a client of `jtop.service` (`/run/jtop.sock`). The wheel ships
     the unit only as a template (`/usr/share/jetson_stats/`) saying `/usr/local/bin/jtop`, and
     root's first `jtop` copies it into `/etc/systemd/system` when none is there: on hardware
     that unit sat in `activating` forever. The build fixes the template's path and installs it
     as `/etc/systemd/system/jtop.service`, enabled: in `/etc` because that is the path jtop
     checks (a symlink there to `/usr/lib` is `bad` to systemd). The smoke test fails unless the
-    unit's `ExecStart` binary is executable. Whether `jtop` reaches the driver is unverified.
+    unit's `ExecStart` binary is executable. The service then keeps its settings
+    (`config.json`, the stored `jetson_clocks` state) in `sys.base_prefix + /local/jtop`,
+    creating it on start: `/usr/local/jtop`. **`/usr/local` here is a plain directory in the
+    read-only `/usr`**, not a link to `/var/usrlocal` (the start died with `EROFS` on
+    hardware), so the build links `/usr/local/jtop` → `/var/lib/jtop`, which `tmpfiles.d`
+    creates; the build fails if `/usr/local` ever becomes a link, and the smoke test asks jtop
+    for the folder and expects it under `/var`. Whether `jtop` reaches the driver is unverified.
+- `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
+  - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
+    from `base/physically-bound-images/`.
   - `flightctl-agent` from `rhacm-${ACM_VER}-for-rhel-9-$(uname -m)-rpms`
     (`ACM_VER=2.15`, match the hub), no weak deps. Drop-ins key both
     the agent and `bootc-fetch-apply-updates.service` on `/etc/flightctl/config.yaml`: agent
@@ -809,9 +816,9 @@ cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi ext
 # values (decision 9) under the same names first; the Containerfiles have no defaults.
 sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev \
     --build-arg BASE=$JETPACK_IMAGE --build-arg RHEL_VERSION=$RHEL_VERSION \
-    --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION .
+    --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION --build-arg JTOP_VER=$JTOP_VERSION .
 sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
-    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg JTOP_VER=$JTOP_VERSION --build-arg ACM_VER=$ACM_VERSION \
+    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg ACM_VER=$ACM_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
 sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \

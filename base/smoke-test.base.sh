@@ -35,4 +35,41 @@ for cmd in lvm vgs; do
 	command -v "$cmd" || { echo "missing: $cmd, from lvm2"; exit 1; }
 done
 
+echo "== jetson-stats =="
+if ! command -v jtop; then
+	echo "jtop is not on PATH ($PATH); where pip put jetson-stats:"
+	pip3 show -f jetson-stats 2>&1 | sed 's/^/   /'
+	exit 1
+fi
+
+# The wheel's template runs /usr/local/bin/jtop; jtop installs it as is when this
+# file is missing, and it never starts.
+unit=/etc/systemd/system/jtop.service
+if [[ ! -f $unit || -L $unit ]]; then
+	echo "not a regular file: $unit"
+	ls -la /etc/systemd/system | grep -i jtop | sed 's/^/   /'
+	exit 1
+fi
+exe=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$unit")
+if [[ ! -x $exe ]]; then
+	echo "$unit runs '$exe', which is not executable:"
+	grep -n ExecStart "$unit" | sed 's/^/   /'
+	exit 1
+fi
+if [[ ! -L $wants/jtop.service ]]; then
+	echo "not enabled: jtop.service"
+	ls -la "$wants" | sed 's/^/   /'
+	exit 1
+fi
+
+# jtop's settings folder is /usr/local/jtop, linked to /var/lib/jtop. Create that
+# as tmpfiles would at boot, and check jtop's path resolves there.
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/jtop.conf
+cfg=$(python3 -c 'from jtop.core.config import get_config_service as g; print(g())')
+if [[ $(realpath -m "$cfg") != /var/lib/jtop || ! -d $cfg ]]; then
+	echo "jtop settings folder $cfg does not resolve to /var/lib/jtop:"
+	ls -ld "$cfg" /var/lib/jtop 2>&1 | sed 's/^/   /'
+	exit 1
+fi
+
 echo "all checks passed"
