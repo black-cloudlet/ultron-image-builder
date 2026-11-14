@@ -483,9 +483,12 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     root (kustomize 5.4.3 standing in for `oc`) and Valkey 9.1.1 built from source with that
     day's `valkey.conf` and `users.acl` (`NOAUTH`, the probe user, `NOPERM`, `WRONGPASS`,
     `LOADING`, a SIGTERM save surviving a restart). Since TLS and the generated passwords:
-    `render-acl.sh` under `sh` against good, missing and empty passwords and a template user
-    with none; the smoke test's valkey and restricted-v2/resources/pull-policy sections against
-    a Python stand-in for the render, with eighteen broken variants each caught. Never run:
+    `render-acl.sh` under `bash --posix` (the image's `sh` is BusyBox 1.37 `ash`, which has
+    `pipefail`; dash, the local `sh`, has not) against good, missing, empty and misnamed
+    password files, none at all, a template user without one, and a `sha256sum` that fails
+    or prints garbage; the smoke test's valkey and restricted-v2/resources/pull-policy
+    sections against a Python stand-in for the render, with twenty-four broken variants each
+    caught. Never run:
     Valkey with this TLS config, `tls-auto-reload-interval`, the init container, ESO's
     generator and `CreatedOnce` under MicroShift's re-apply, the `ClusterSecretStore`'s
     conditions, the arm64 image, topolvm's fsGroup, cert-manager issuing.
@@ -530,29 +533,49 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     - `passwords.yaml`: ESO `Password` generator (64 characters, no symbols so it goes into
       URLs and shells unquoted, `allowRepeat: true`: 64 characters ask for 16 digits and
       without repeats there are 10, so the generator fails and the pod never starts) behind
-      two ExternalSecrets with **`refreshPolicy: CreatedOnce`**, Secrets
-      `valkey-app-password` and `valkey-root-password` (key `password`). Written at first
-      boot, kept in etcd across reboots and upgrades though MicroShift re-applies the root.
+      two ExternalSecrets with **`refreshPolicy: CreatedOnce`** and **`creationPolicy:
+      Orphan`**, Secrets `valkey-app-password` and `valkey-root-password` (key `password`).
+      Written at first boot, kept in etcd across reboots and upgrades though MicroShift
+      re-applies the root. Orphan: no owner reference, so a later image that renames or drops
+      an ExternalSecret cannot cascade-delete a password and have a new one generated.
     - `users.acl` in git is a template with `#@VALKEY_<USER>_PASSWORD_SHA256@`. The init
-      container (same image) runs `render-acl.sh` from the ConfigMap: each user's password is
-      a file named after it in a projected volume of the two Secrets; it writes the SHA-256s
-      into a memory `emptyDir`, which Valkey reads as its `aclfile`, and fails on a missing
-      password or a placeholder without one. A new user takes a template line, a Secret, a
-      projected item and its name in the script's loop. The ConfigMap (conf, template,
+      container (same image) runs `render-acl.sh` from the ConfigMap (`set -euo pipefail`):
+      each file in a projected volume of the Secrets is one user's password, named after the
+      user; it fills that user's placeholder with the file's SHA-256, writes the result into a
+      memory `emptyDir`, which Valkey reads as its `aclfile`, and stops on an empty or
+      misnamed file, a hash that is not 64 hex digits, or a template user with no file. A new
+      user takes a template line, an ExternalSecret and a projected item; the smoke test fails
+      unless template users and projected files are the same set. The ConfigMap (conf, template,
       script) holds no secret, so it keeps kustomize's name suffix, which rolls the pod;
       superseded copies stay behind (MicroShift never prunes), harmlessly.
-    - `distribute.yaml`: Secret `valkey-credentials` (`username: app`, `password`) in every
-      namespace labelled **`ultron/valkey-client=true`**, new ones included, through a Role
-      (`get`, `resourceNames: [valkey-app-password]`), a `ClusterSecretStore` and a
-      `ClusterExternalSecret`, `refreshInterval: 1h`. The store's `conditions` carry the same
-      selector: a `ClusterSecretStore` can be named from any namespace, so without them anyone
-      allowed to create an ExternalSecret anywhere could read `app`'s password. Only
-      cluster-admin can label a namespace, so the label is the grant; removing it deletes the
-      copy (owned). **root's password never leaves `valkey`**: `oc get secret -n valkey
-      valkey-root-password -o jsonpath='{.data.password}' | base64 -d`.
-    - Rotation: delete a password Secret, ESO writes a new one, restart `valkey-0` (the init
-      container runs only at start); clients' copies follow within the hour. Run-time `ACL
-      SETUSER` users last until the next restart.
+    - `distribute.yaml`: Secret `ultron-valkey-credentials` (`username: app`, `password`) in
+      every namespace labelled **`ultron/valkey-client=true`**, new ones included, through a
+      Role (`get`, `resourceNames: [valkey-app-password]`), a `ClusterSecretStore` and a
+      `ClusterExternalSecret`, `refreshInterval: 1h`. Prefixed, since a client namespace may
+      already hold its own `valkey-credentials`, which ESO would neither replace nor adopt. The
+      store's `conditions` carry the same selector: a `ClusterSecretStore` can be named from
+      any namespace, so without them anyone allowed to create an ExternalSecret anywhere could
+      read `app`'s password. **The label is the grant**: whoever may label a namespace, or
+      create one with the label set, gets `app`'s password. On MicroShift both are
+      cluster-admin's alone (no project self-provisioning); a role that grants either widens
+      it. Removing the label deletes the copy (owned). **root's password never leaves
+      `valkey`**: `oc get secret -n valkey valkey-root-password -o
+      jsonpath='{.data.password}' | base64 -d`.
+    - **Rotation**, in this order, so clients are out of step for seconds rather than the hour
+      of the refresh (the init container reads the passwords only at pod start). Unverified:
+      that a force-sync makes a `CreatedOnce` ExternalSecret write a deleted Secret again.
+      ```
+      oc delete secret -n valkey valkey-app-password
+      oc annotate externalsecret -n valkey valkey-app-password force-sync=$(date +%s) --overwrite
+      until oc get secret -n valkey valkey-app-password; do sleep 2; done
+      oc get externalsecret -A --field-selector metadata.name=ultron-valkey-credentials \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' |
+        xargs -I{} oc annotate externalsecret -n {} ultron-valkey-credentials \
+          force-sync=$(date +%s) --overwrite
+      oc delete pod -n valkey valkey-0
+      ```
+      For root, the first three lines with `valkey-root-password`, then the restart. Run-time
+      `ACL SETUSER` users last until the next restart.
     Per-client isolation is a user per client restricted to a key prefix (`~billing:*`), not
     numbered databases. Not done: client certificates, a metrics exporter, replicas.
   **Resources rule**, every root: memory request = limit (OOM-killed at its own ceiling, never
@@ -574,12 +597,14 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   line `user <name>`, `user default off -@all` and `user probe on nopass -@all +ping` as whole
   lines (token checks missed ACL aliases, `%RW~` patterns and selectors), `nopass` only on
   `probe`, no `>` password or `#` hash, every other user taking
-  `#@VALKEY_<USER>_PASSWORD_SHA256@`, `root` and `app` among them; in `valkey.conf` no `user`
+  `#@VALKEY_<USER>_PASSWORD_SHA256@`, token by token (no `>` token, no `#` token but the
+  user's own placeholder), `root` and `app` among them; in `valkey.conf` no `user`
   lines or `protected-mode no`, `port 0` with a `tls-port`, the three TLS files in one
   directory, a reload interval; in the render Valkey reading its ACL from a memory `emptyDir`
-  an init container running `render-acl.sh` writes, each placeholder user's password a
-  projected file from a `CreatedOnce` ExternalSecret's `Password` generator (length ≥ 32,
-  `allowRepeat`), no Role reaching root's Secret or every Secret, each
+  an init container running `render-acl.sh` writes, the template's users and the projected
+  password files the same set, each a `CreatedOnce`, `Orphan` ExternalSecret's from a
+  `Password` generator (length ≥ 32, `allowRepeat`), no Role reaching root's Secret or every
+  Secret, no binding to a role outside the render (whose rules it cannot see), each
   `ClusterExternalSecret`'s namespace selector neither `{}` nor different from its store's
   `conditions`, the TLS Secret a `Certificate`'s from `ClusterIssuer/device-ca` that names
   every Service, and a headless `serviceName`. It prints `du -sh` of the cache, which the
@@ -714,14 +739,16 @@ hardware.
    Valkey: `oc get certificate -n valkey` Ready; `oc get externalsecret,secret -n valkey`
    has both password Secrets, unchanged after a reboot and a MicroShift restart
    (`CreatedOnce`); Ready (the init container ran, the probe user works); `oc label ns <ns>
-   ultron/valkey-client=true` and `valkey-credentials` appears there within a minute, and is
-   gone after unlabelling; an ExternalSecret naming the store from an unlabelled namespace is
-   refused; from a labelled namespace, `valkey-cli --tls --cacert <ca-bundle ca.crt> -h
-   valkey.valkey.svc.cluster.local ping` verifies and gets `NOAUTH`, `--user app` with
-   `valkey-credentials`' password works, a wrong one gets `WRONGPASS`, `app`'s `CONFIG GET
+   ultron/valkey-client=true` and `ultron-valkey-credentials` appears there within a minute,
+   and is gone after unlabelling; an ExternalSecret naming the store from an unlabelled
+   namespace is refused; from a labelled namespace, `valkey-cli --tls --cacert <ca-bundle
+   ca.crt> -h valkey.valkey.svc.cluster.local ping` verifies and gets `NOAUTH`, `--user app`
+   with `ultron-valkey-credentials`' password works, a wrong one gets `WRONGPASS`, `app`'s `CONFIG GET
    maxmemory` gets `NOPERM` and `root`'s works; a plaintext connection to 6379 fails; `oc
    delete secret -n valkey valkey-tls`, cert-manager reissues, and within an hour `openssl
-   s_client` shows the new serial with no pod restart (`tls-auto-reload-interval`);
+   s_client` shows the new serial with no pod restart (`tls-auto-reload-interval`); the
+   rotation procedure above leaves clients failing for seconds at most, and the password
+   Secrets survive deleting their ExternalSecrets (`Orphan`);
    `oc exec valkey-0 -- ls -ldn /data` is writable by the assigned UID (topolvm must apply the
    fsGroup, unverified; a failed save in `INFO persistence` says otherwise); `SET`, `SAVE`,
    delete the pod and reboot, the key survives; the log's `vm.overcommit_memory` and

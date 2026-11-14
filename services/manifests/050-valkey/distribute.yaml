@@ -1,7 +1,9 @@
-# app's password, as Secret valkey-credentials (username, password), into every
-# namespace labelled ultron/valkey-client=true, new ones included. Only
-# cluster-admin can label a namespace, so the label is the grant. root's
-# password is never served: the Role names only app's Secret.
+# app's password, as Secret ultron-valkey-credentials (username, password), into
+# every namespace labelled ultron/valkey-client=true, new ones included. The
+# label is the grant: whoever may label a namespace, or create one with the
+# label set, gets app's password. On MicroShift both are cluster-admin's alone
+# (there is no project self-provisioning); a role that adds either widens this.
+# root's password is never served: the Role names only app's Secret.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -56,13 +58,15 @@ spec:
           name: valkey-credentials-reader
           namespace: valkey
 ---
-# refreshInterval: a rotated password reaches clients within the hour.
+# refreshInterval: a rotated password reaches clients within the hour unless
+# force-synced (passwords.yaml). Prefixed names: a client namespace may already
+# have its own valkey-credentials, which ESO would neither replace nor adopt.
 apiVersion: external-secrets.io/v1
 kind: ClusterExternalSecret
 metadata:
-  name: valkey-credentials
+  name: ultron-valkey-credentials
 spec:
-  externalSecretName: valkey-credentials
+  externalSecretName: ultron-valkey-credentials
   namespaceSelectors:
     - matchLabels:
         ultron/valkey-client: "true"
@@ -72,7 +76,7 @@ spec:
       kind: ClusterSecretStore
       name: valkey-credentials
     target:
-      name: valkey-credentials
+      name: ultron-valkey-credentials
       creationPolicy: Owner
       template:
         data:
