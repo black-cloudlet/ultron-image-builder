@@ -8,21 +8,22 @@ FROM ${BASE_IMAGE}
 COPY services/manifests/ /usr/lib/microshift/manifests.d/
 
 # Upstream installs, curl'd here and patched from the roots above, never forked.
-# Pinned, never a channel: the version ARGs are the only pin on the images too.
-ARG CERT_MANAGER_VER=v1.21.2
+# Pinned, never a channel: the versions (repository variables) are the only pin on
+# the images too.
+ARG CERT_MANAGER_VER
 RUN curl -fsSL \
       -o /usr/lib/microshift/manifests.d/010-cert-manager/cert-manager.yaml \
-      "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VER}/cert-manager.yaml"
+      "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VER:?CERT_MANAGER_VER is not set}/cert-manager.yaml"
 
-ARG EXTERNAL_SECRETS_VER=v1.2.0
+ARG EXTERNAL_SECRETS_VER
 RUN curl -fsSL \
       -o /usr/lib/microshift/manifests.d/020-external-secrets/external-secrets.yaml \
-      "https://github.com/external-secrets/external-secrets/releases/download/${EXTERNAL_SECRETS_VER}/external-secrets.yaml"
+      "https://github.com/external-secrets/external-secrets/releases/download/${EXTERNAL_SECRETS_VER:?EXTERNAL_SECRETS_VER is not set}/external-secrets.yaml"
 
 # Not kserve-cluster-resources.yaml: its fourteen runtimes' images would all be embedded.
-ARG KSERVE_VER=v0.20.0
+ARG KSERVE_VER
 RUN curl -fsSL -o /usr/lib/microshift/manifests.d/030-kserve/kserve.yaml \
-      "https://github.com/kserve/kserve/releases/download/${KSERVE_VER}/kserve.yaml"
+      "https://github.com/kserve/kserve/releases/download/${KSERVE_VER:?KSERVE_VER is not set}/kserve.yaml"
 
 # Embed what the manifests name, rendered, not a list kept beside them.
 # SERVICE_IMAGES is for an image no manifest names. && and the exit in the loop:

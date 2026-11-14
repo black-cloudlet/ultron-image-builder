@@ -7,10 +7,10 @@ FROM ${BASE_IMAGE}
 # could pull a kernel the Tegra kmod cannot load against. --enablerepo rather
 # than config-manager, so dnf-plugins-core need not be in the base.
 # openshift-clients is `oc` — the microshift RPM ships no client.
-ARG USHIFT_VER=4.20
+ARG USHIFT_VER
 RUN dnf install -y \
-        --enablerepo="rhocp-${USHIFT_VER}-for-rhel-9-$(uname -m)-rpms" \
-        --enablerepo="fast-datapath-for-rhel-9-$(uname -m)-rpms" \
+        --enablerepo="rhocp-${USHIFT_VER:?USHIFT_VER is not set}-for-rhel-$(cut -d. -f1 /etc/dnf/vars/releasever)-$(uname -m)-rpms" \
+        --enablerepo="fast-datapath-for-rhel-$(cut -d. -f1 /etc/dnf/vars/releasever)-$(uname -m)-rpms" \
         dnsmasq firewalld jq microshift microshift-release-info openshift-clients && \
     systemctl enable microshift && \
     dnf clean all
@@ -66,7 +66,7 @@ EOF
 
 # CRI-O needs the NVIDIA runtime before a pod can ask for a GPU. Ask for the
 # .toml name: nvidia-ctk renames a .conf drop-in and still exits 0.
-ARG NVIDIA_DEVICE_PLUGIN_VER=v0.20.0
+ARG NVIDIA_DEVICE_PLUGIN_VER
 RUN nvidia-ctk runtime configure --runtime=crio --set-as-default \
         --config=/etc/crio/crio.conf.d/99-nvidia.toml
 
@@ -76,7 +76,7 @@ COPY microshift/crio.conf.d/20-pinned-images.conf \
 
 RUN mkdir -p /usr/lib/microshift/manifests && \
     curl -fsSL -o /usr/lib/microshift/manifests/nvidia-device-plugin.yml \
-      "https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/${NVIDIA_DEVICE_PLUGIN_VER}/deployments/static/nvidia-device-plugin.yml"
+      "https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/${NVIDIA_DEVICE_PLUGIN_VER:?NVIDIA_DEVICE_PLUGIN_VER is not set}/deployments/static/nvidia-device-plugin.yml"
 
 # Kustomization, time-slicing ConfigMap and the patch that mounts it — the
 # upstream manifest above is patched, never forked.

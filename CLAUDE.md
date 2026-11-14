@@ -116,16 +116,16 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
    runner gives native aarch64 (qemu is not viable), the container gives RHEL's
-   podman, and `subscription-manager register` gives entitlement. The builder is **9.8
-   throughout**, the vendor image's release: the container is `ubi9/ubi:9.8-<build>`, and
-   it registers first, runs `subscription-manager release --set=9.8` and disables
-   `ubi.repo` before installing podman. UBI's repos have no 9.8 path, only the moving `9`
-   stream: 9.9's podman needs a netavark that requires `aardvark-dns >= 3:1.17`, UBI had
-   only `2:1.17.1` (2026-11), and no podman would install. The builder's lock does **not**
-   reach a build: inside one, subscription-manager runs in container mode and `dnf` takes
-   `$releasever` from the image, RHEL's `9`, so run 5 (2026-11-11) put NetworkManager, bind
-   and sos from 9.9 onto the 9.8 base. `base/` writes `9.8` to `/etc/dnf/vars/releasever`,
-   which every layer inherits. Move all three pins with the vendor image. Images go to
+   podman, and `subscription-manager register` gives entitlement. The builder is untagged
+   `ubi9/ubi` and follows RHEL 9: it registers first and disables `ubi.repo` before
+   installing podman, because UBI's repos are a subset that once shipped a podman whose
+   netavark required `aardvark-dns >= 3:1.17` with only `2:1.17.1` there (2026-11). A
+   release lock on the builder would not reach a build anyway: inside one,
+   subscription-manager runs in container mode and `dnf` takes `$releasever` from the image,
+   RHEL's `9`, so run 5 (2026-11-11) put NetworkManager, bind and sos from 9.9 onto the 9.8
+   base. `base/` writes `RHEL_VERSION` to `/etc/dnf/vars/releasever` after checking it is the
+   vendor image's own `VERSION_ID`; every layer inherits it, and reads its major for the
+   `-for-rhel-N-` repo names (decision 9). Images go to
    GHCR, then into the air-gapped registry by hand. Pattern from
    `redhat-et/edge-ai-image-pipelines` (Apache-2.0). The host's `/mnt` is mounted as
    `/scratch`, with `/var/lib/containers`, `/var/tmp` and the ISO output bound onto it — for
@@ -153,6 +153,21 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    bound-images → kiosk → microshift → services → ISO. The build context is the repo root. Every
    layer registers with subscription-manager, even the one that installs nothing: one code path.
 8. **NVIDIA BSP download stays manual** (documented in `README.md`). Scripting it was fragile.
+9. **Every version is a GitHub repository variable** (Settings → Secrets and variables →
+   Actions → Variables), the only place it is set: `ultron.yml` passes each as a build arg,
+   the Containerfiles have no defaults and fail at first use without one (`${X:?}`), and
+   `build-image.yml` fails a job whose build arg arrived empty before it registers.
+   | Variable | Build arg | Used in |
+   |---|---|---|
+   | `JETPACK_IMAGE` | `BASE` | `base/Containerfile.base`, the vendor tag in full |
+   | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for repo names, `ksvalidator`, bib |
+   | `NVIDIA_CTK_VERSION` | `NVCTK_VER` | base, `nvidia-container-toolkit-base` (`1.20.0-1` form) |
+   | `JTOP_VERSION`, `ACM_VERSION` | `JTOP_VER`, `ACM_VER` | `base/Containerfile.podman` |
+   | `MICROSHIFT_VERSION`, `NVIDIA_DEVICE_PLUGIN_VERSION` | `USHIFT_VER`, `NVIDIA_DEVICE_PLUGIN_VER` | `microshift/` |
+   | `CERT_MANAGER_VERSION`, `EXTERNAL_SECRETS_VERSION`, `KSERVE_VERSION` | `CERT_MANAGER_VER`, `EXTERNAL_SECRETS_VER`, `KSERVE_VER` | `services/` |
+   Bump `JETPACK_IMAGE` and `RHEL_VERSION` together; a mismatch fails the base build. Not a
+   variable: the Triton tag (an `image:` in `040-triton-runtime/`), and the RHEL major in the
+   builder's `ubi9/ubi` (a job container cannot be computed from a value).
 
 ## What is done and working
 
@@ -563,8 +578,8 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `ghcr.io/<owner>/ultron-bootc-<name>`, output the digest-pinned ref, and report the
   layer size as a `::notice`. Tags: `<YYYYMMDD-sha8>` on every build; `latest` and `stable`
   only when `GITHUB_REF` is `refs/heads/main` (the caller's ref), so dispatching a branch to
-  test it moves neither. No MicroShift-version tag: `USHIFT_VER` is set once, as the
-  Containerfile's `ARG` default. The `also-as` name is validated before the build. `also-as` pushes
+  test it moves neither. No MicroShift-version tag: it is the `MICROSHIFT_VERSION`
+  repository variable (decision 9). The `also-as` name is validated before the build. `also-as` pushes
   the same tags under a second name: `services` is also `ghcr.io/<owner>/ultron-bootc`, the finished
   OS under the project's name. Its digest should equal the first (same compressed layers); a
   mismatch is a `::warning`, not a failure, since nothing builds on it. The ISO and the chain
@@ -787,9 +802,13 @@ lsusb | grep 0955
 cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi external
 
 # Local image build on a subscribed RHEL 9 aarch64 box, from the repo root. Each layer FROM the
-# one before it; the workflow passes BASE_IMAGE as a digest.
-sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev .
+# one before it; the workflow passes BASE_IMAGE as a digest. Export the repository variables'
+# values (decision 9) under the same names first; the Containerfiles have no defaults.
+sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev \
+    --build-arg BASE=$JETPACK_IMAGE --build-arg RHEL_VERSION=$RHEL_VERSION \
+    --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION .
 sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
+    --build-arg JTOP_VER=$JTOP_VERSION --build-arg ACM_VER=$ACM_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
 sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \
@@ -797,9 +816,13 @@ sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk
     --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
 sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
+    --build-arg USHIFT_VER=$MICROSHIFT_VERSION \
+    --build-arg NVIDIA_DEVICE_PLUGIN_VER=$NVIDIA_DEVICE_PLUGIN_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
 sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
+    --build-arg CERT_MANAGER_VER=$CERT_MANAGER_VERSION \
+    --build-arg EXTERNAL_SECRETS_VER=$EXTERNAL_SECRETS_VERSION --build-arg KSERVE_VER=$KSERVE_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 # Smoke tests are fed on stdin, the same way the workflow runs them
 podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh
