@@ -61,7 +61,7 @@ upgrade (see [Storage layout](#storage-layout)).
 | OS | RHEL 9.8, image mode (bootc), aarch64 |
 | Base image | Red Hat's GA JetPack-for-RHEL bootc image, pinned: `registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727` |
 | JetPack / L4T | JetPack 6.2.3, L4T **r36.5.x** (the base smoke test fails otherwise), kernel `5.14.0-687.58.1.el9_8` |
-| GPU integration | Ships in the base image: the Tegra kernel modules, `nvidia-container-toolkit`, CDI (`/etc/cdi/nvidia.yaml` generated at boot) |
+| GPU integration | The vendor image ships the Tegra kernel modules and the unit generating CDI (`/etc/cdi/nvidia.yaml`) at boot; the base layer adds `nvidia-container-toolkit-base` 1.20.0, which that unit runs |
 | Kubernetes | MicroShift 4.20 |
 | Boot firmware | Flashed separately onto the Jetson's QSPI from a Jetson Linux **R36.5.x** BSP, which must match the image's L4T line |
 
@@ -113,8 +113,8 @@ digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-
 | services | `services/Containerfile` | `ultron-bootc-services`, and `ultron-bootc` | four kustomize roots applied by MicroShift, 7 embedded images | no RPMs |
 
 The top layer is the finished OS, so it is also pushed as **`ghcr.io/black-cloudlet/ultron-bootc`**,
-with the same tags. That is the name to mirror and boot. The ISO still installs
-`ultron-bootc-services` by digest, which is the same manifest.
+with the same tags. That is the name to mirror and boot, and the one the ISO installs, by the
+digest this run pushed: neither the ISO nor a node's origin names a layer.
 
 **Why a chain instead of one Containerfile:** rebuild cost. The microshift layer installs RPMs
 and pulls MicroShift's whole control plane (nine images); the services layer changes far more
@@ -125,19 +125,23 @@ changes rarely, and putting it on top instead would reinstall Firefox on every s
 
 ### base: the vendor image, republished
 
-`base/Containerfile.base` is `FROM` the pinned JetPack-for-RHEL tag plus `bootc container lint`,
-nothing else. It exists so the pin lives in exactly one file, so the air-gapped registry gets a
-name we control, and so its digest stays a pure republish of what Red Hat ships.
+`base/Containerfile.base` is `FROM` the pinned JetPack-for-RHEL tag, plus three things: a
+`releasever` file locking every layer's `dnf` to RHEL 9.8 (the vendor image's release; without
+it a build follows the newest RHEL 9), NVIDIA's container toolkit, and the field tools. It exists
+so the pin lives in exactly one file and the air-gapped registry gets a name we control.
 
-The vendor image already contains everything the GPU needs: the Tegra kernel modules
-(`nvgpu.ko`), the JetPack user space, `nvidia-container-toolkit`, the service that writes the CDI
-spec at boot, the console kernel arguments, and `podman`/`skopeo`. So no layer here adds NVIDIA
-packages. The tag is pinned in full and never `latest`, because the kernel modules are built
-against that exact kernel.
+The vendor image contains the Tegra kernel modules (`nvgpu.ko`), the JetPack user space, the
+service that writes the CDI spec at boot, the console kernel arguments, and `podman`/`skopeo`.
+It no longer contains the container toolkit that service runs: Red Hat dropped it from its
+builds in September 2026 and the unit then skips silently. So this layer installs
+`nvidia-container-toolkit-base` 1.20.0, the version the last vendor build shipped, from NVIDIA's
+signed repository; it is the one NVIDIA package added here. The tag is pinned in full and never
+`latest`, because the kernel modules are built against that exact kernel.
 
 **Smoke test** (`base/smoke-test.base.sh`) checks the vendor image still is what we expect: bootc,
-`/etc/nv_tegra_release`, the kmod and container-toolkit packages, `nvgpu.ko`, `skopeo`, `podman`,
-and `lvm2` (the root filesystem is on LVM and MicroShift's storage needs `vgs`).
+`/etc/nv_tegra_release` (R36.5.x, to match the QSPI), the kmod and container-toolkit packages,
+that the vendor's CDI unit finds the toolkit and is enabled, `nvgpu.ko`, `skopeo`, `podman`, and
+`lvm2` (the root filesystem is on LVM and MicroShift's storage needs `vgs`).
 
 ### bound-images: embedding machinery, jtop and the Edge Manager agent
 
@@ -149,9 +153,9 @@ variant, not a variant of its own. Three things:
   `copy_embedded_images.sh` and `copy-embedded-images.service` (boot time: restore that cache
   into the container store). How they work is in
   [How a node runs with no registry](#how-a-node-runs-with-no-registry).
-- **`jtop`** (jetson-stats, pinned by `JTOP_VER`), installed with `pip3 install --prefix=/usr`:
+- **`jtop`** (jetson-stats, pinned by `JTOP_VERSION`), installed with `pip3 install --prefix=/usr`:
   on bootc, `/usr/local` is per-machine state and would not ship in the image.
-- **Edge Manager agent** (`flightctl-agent` from ACM, `ACM_VER=2.15`, no weak deps).
+- **Edge Manager agent** (`flightctl-agent` from ACM, `ACM_VERSION`, no weak deps).
   Enabled but idle until `/etc/flightctl/config.yaml` exists; while it does,
   `bootc-fetch-apply-updates.service` is skipped, since Edge Manager owns OS updates.
   The package's greenboot check passes while the agent is unenrolled; unguarded, it
@@ -450,9 +454,35 @@ Seven images come from the services layer today: cert-manager ×3, External Secr
 ### Where it runs
 
 GitHub has no RHEL runner, so each job runs on **`ubuntu-24.04-arm`** (native arm64; emulating
-arm64 is not viable) **inside a `registry.access.redhat.com/ubi9/ubi` container**. The container
-supplies RHEL's `podman`, and a `subscription-manager register` inside it
-supplies entitlement for the RHEL and OpenShift repos.
+arm64 is not viable) **inside a `registry.access.redhat.com/ubi9/ubi` container**. The container supplies RHEL's
+`podman`, and a `subscription-manager register` inside it supplies entitlement for the RHEL and
+OpenShift repos. The builder installs from those repos, with UBI's own repos off: they are a
+subset that once shipped a podman that could not be installed. The images' RHEL release is not
+the builder's: the base layer locks every layer's `dnf` to `RHEL_VERSION` with a `releasever`
+file.
+
+### Versions
+
+Every version is a **repository variable** (Settings → Secrets and variables → Actions →
+Variables), and that is the only place it is set. `ultron.yml` passes each to the layer that
+uses it as a build argument; the Containerfiles have no defaults, and a job whose variable is
+unset fails before it starts building.
+
+| Variable | Example | What it pins |
+|---|---|---|
+| `JETPACK_IMAGE` | `registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727` | the vendor base image, in full |
+| `RHEL_VERSION` | `9.8` | the release every layer's `dnf` uses; must be the vendor image's own (the base build checks) |
+| `NVIDIA_CTK_VERSION` | `1.20.0-1` | `nvidia-container-toolkit-base` |
+| `JTOP_VERSION` | `7.2.1` | jetson-stats |
+| `ACM_VERSION` | `2.15` | the Edge Manager agent's ACM repo (match the hub) |
+| `MICROSHIFT_VERSION` | `4.20` | MicroShift |
+| `NVIDIA_DEVICE_PLUGIN_VERSION` | `v0.20.0` | the NVIDIA device plugin manifest |
+| `CERT_MANAGER_VERSION` | `v1.21.2` | cert-manager |
+| `EXTERNAL_SECRETS_VERSION` | `v1.2.0` | External Secrets |
+| `KSERVE_VERSION` | `v0.20.0` | KServe |
+
+The Triton image tag is not a variable: it is the `image:` in
+`services/manifests/040-triton-runtime/`.
 
 The runner's `/mnt` disk is mounted as `/scratch`, and container storage, `/var/tmp` and the ISO
 output go there. That is for space (the embedded images run to gigabytes), and so podman can use
@@ -462,7 +492,8 @@ strips `metacopy` and fails unless `podman info` reports `Native Overlay Diff:tr
 
 ### One layer (`build-image.yml`)
 
-1. Install podman and jq in the UBI container and register with Red Hat.
+1. Check no build argument is empty (an unset variable), register with Red Hat, and install
+   podman and jq.
 2. Move container storage onto `/scratch`.
 3. Compute the tags (`latest` and `stable` only on `main`) and validate the `also-as` name
    *before* the build.
@@ -493,8 +524,8 @@ Every layer is published under these tags, all naming the same manifest:
 | `stable` | builds of `main` only | the release set: all five layers from one run, mirrored together. `services` is rechunked, so it shares no blobs with the four below it: a mirror of all five stores that content twice, and a node needs only `services` |
 
 A branch dispatched to test it gets only the immutable tag, so it never moves what anything
-upgrading follows. The MicroShift version is not a tag; it is `USHIFT_VER` in
-`microshift/Containerfile`, the one place it is set.
+upgrading follows. The MicroShift version is not a tag; it is the
+`MICROSHIFT_VERSION` repository variable, the one place it is set.
 
 ### The ISO (`build-iso.yml`)
 
