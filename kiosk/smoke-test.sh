@@ -97,6 +97,14 @@ for node in /dev/nvmap /dev/nvhost-ctrl-gpu /dev/nvgpu/igpu0/ctrl; do
 	}
 done
 
+echo "== the GPU stays powered =="
+# A second writer of railgate_enable wins or loses by run order.
+ours=/usr/lib/udev/rules.d/99-jetson-gpu-railgate.rules
+others=$(grep -rls railgate_enable /usr/lib/udev/rules.d /etc/udev/rules.d \
+	$(find /etc /usr/lib /usr/share -maxdepth 3 -name 'nvpmodel*.conf' 2>/dev/null) \
+	| grep -vx "$ours" || true)
+[[ -z $others ]] || fail "railgate_enable is also written by: ${others//$'\n'/ }"
+
 echo "== no way out of the session =="
 # A terminal or file manager is one handler away.
 for app in gnome-terminal ptyxis kgx xterm konsole foot nautilus; do
