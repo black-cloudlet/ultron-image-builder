@@ -1,7 +1,7 @@
 #!/bin/bash
-# Checks run inside the podman/bound-images layer before it is pushed. Fed on
+# Checks run inside the bound-images layer before it is pushed. Fed on
 # stdin:
-#   podman run --rm -i "$IMAGE:$TAG" bash -s < base/smoke-test.podman.sh
+#   podman run --rm -i "$IMAGE:$TAG" bash -s < bound-images/smoke-test.sh
 #
 # Only what the build cannot fail on by itself: the COPYs in the Containerfile
 # already fail the build if their file is missing.

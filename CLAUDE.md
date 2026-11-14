@@ -4,8 +4,8 @@ Provisioning and image pipeline for NVIDIA Jetson AGX Orin edge nodes running RH
 (bootc) in a disconnected environment. The project is **Ultron**: images are
 `ultron-bootc-<layer>`, the top one also `ultron-bootc`, the ISO `ultron-<tag>.iso`. Read this whole file before touching anything.
 
-**Two repos.** This one holds the image pipeline (`base/`, `microshift/`, `services/`,
-`.github/workflows/`). The flashing-station tooling (`mirror.sh`, `install-offline.sh`, the
+**Two repos.** This one holds the image pipeline (`base/`, `bound-images/`, `kiosk/`,
+`microshift/`, `services/`, `.github/workflows/`). The flashing-station tooling (`mirror.sh`, `install-offline.sh`, the
 station-side flashing docs) lives in `black-cloudlet/jetson-installer-config`: different job,
 different machines. This file describes both because they must agree on the L4T line, but only
 the image pipeline is editable from here.
@@ -136,9 +136,10 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    `metacopy=on`, which defeats it too, so the step strips it and fails unless `podman info`
    reports `Native Overlay Diff:true`.
 7. **Five layers for microshift, one directory per Kubernetes variant.**
-   - `base/Containerfile.base` republishes the pinned vendor image under our name, plus field
+   - `base/Containerfile` republishes the pinned vendor image under our name, plus field
      tools (`tcpdump` and the like) and `jtop`.
-   - `base/Containerfile.podman` adds the physically-bound-images machinery.
+   - `bound-images/Containerfile` adds the physically-bound-images machinery and the Edge
+     Manager agent; its scripts and unit sit beside it.
      Published as `ultron-bootc-bound-images` from CI job `bound_images` (an underscore:
      `needs.bound-images` parses as a subtraction and resolves to nothing).
    - `kiosk/` adds GDM, GNOME Kiosk's script session, Firefox and the `kiosk` user. Shared,
@@ -161,11 +162,11 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    `build-image.yml` fails a job whose build arg arrived empty before it registers.
    | Variable | Build arg | Used in |
    |---|---|---|
-   | `JETPACK_IMAGE` | `BASE` | `base/Containerfile.base`, the vendor tag in full |
-   | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for the `-for-rhel-N-` repos in `base/Containerfile.podman` and `microshift/`, `ksvalidator`, bib |
+   | `JETPACK_IMAGE` | `BASE` | `base/Containerfile`, the vendor tag in full |
+   | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for the `-for-rhel-N-` repos in `bound-images/Containerfile` and `microshift/`, `ksvalidator`, bib |
    | `NVIDIA_CTK_VERSION` | `NVCTK_VER` | base, `nvidia-container-toolkit-base` (`1.20.0-1` form) |
    | `JTOP_VERSION` | `JTOP_VER` | base, jetson-stats |
-   | `ACM_VERSION` | `ACM_VER` | `base/Containerfile.podman` |
+   | `ACM_VERSION` | `ACM_VER` | `bound-images/Containerfile` |
    | `MICROSHIFT_VERSION`, `NVIDIA_DEVICE_PLUGIN_VERSION` | `USHIFT_VER`, `NVIDIA_DEVICE_PLUGIN_VER` | `microshift/` |
    | `CERT_MANAGER_VERSION`, `EXTERNAL_SECRETS_VERSION`, `KSERVE_VERSION` | `CERT_MANAGER_VER`, `EXTERNAL_SECRETS_VER`, `KSERVE_VER` | `services/` |
    Bump `JETPACK_IMAGE` and `RHEL_VERSION` together; a mismatch fails the base build. Not a
@@ -191,7 +192,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 
 ### Image + ISO pipeline
 
-- `base/Containerfile.base` — the pinned vendor image, the 9.8 `releasever` lock, the container
+- `base/Containerfile` — the pinned vendor image, the 9.8 `releasever` lock, the container
   toolkit (decision 4), field tools, `jtop` and `bootc container lint`. Its smoke test checks the vendor
   image: `skopeo`, `podman`, and `lvm2` (root is on an LV and LVMS needs `vgs`; nothing here
   installs it); and that `nvidia-ctk.service`'s `ConditionPathExists` binary exists and it and
@@ -217,9 +218,9 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     hardware), so the build links `/usr/local/jtop` → `/var/lib/jtop`, which `tmpfiles.d`
     creates; the build fails if `/usr/local` ever becomes a link, and the smoke test asks jtop
     for the folder and expects it under `/var`. Whether `jtop` reaches the driver is unverified.
-- `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
+- `bound-images/Containerfile` — `FROM` that via `ARG BASE_IMAGE`:
   - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
-    from `base/physically-bound-images/`.
+    from beside it in `bound-images/`.
   - `flightctl-agent` from `rhacm-${ACM_VER}-for-rhel-9-$(uname -m)-rpms`
     (`ACM_VER=2.15`, match the hub), no weak deps. Drop-ins key both
     the agent and `bootc-fetch-apply-updates.service` on `/etc/flightctl/config.yaml`: agent
@@ -230,7 +231,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     `[ -f /etc/flightctl/config.yaml ] || exit 0` as its second line (exactly one check
     script, or the build fails); the smoke test runs it and fails unless it passes at once.
   Its smoke test fails if this layer has an image cache: anything here is paid by every variant.
-- `base/physically-bound-images/` — adapted from `redhat-et/edge-ai-image-pipelines`. Cache is
+- `bound-images/`'s scripts — adapted from `redhat-et/edge-ai-image-pipelines`. Cache is
   `/usr/lib/containers-image-cache` with `mapping.txt` (reference → sha), copied into
   containers-storage once per boot by `copy-embedded-images.service` (a oneshot `Requires=`d by
   microshift.service, not an `ExecStartPre=`, so it runs once per boot). No
@@ -627,8 +628,8 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   the `*.iso` alone (no checksum file) at zip `compression-level: 9`, the maintainer's call; it is
   mostly gzip'd layers and squashfs, so the saving is small and the upload slower.
 - `.github/workflows/ultron.yml` — the only caller, on push to `main` under
-  `base/**`, `kiosk/**`, `microshift/**`, `services/**`, `config.toml` or the workflows, and on
-  `workflow_dispatch`. **Nothing runs on a pull request.**
+  `base/**`, `bound-images/**`, `kiosk/**`, `microshift/**`, `services/**`, `config.toml` or
+  the workflows, and on `workflow_dispatch`. **Nothing runs on a pull request.**
 
 **Secrets**: `RH_REGISTRY_USER`/`RH_REGISTRY_PASSWORD` (vendor base and bib pulls), `RHSM_USERNAME`/`RHSM_PASSWORD`
 (every job registers, and unregisters in `if: always()`), `OPENSHIFT_PULL_SECRET` (build-time
@@ -814,10 +815,10 @@ cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi ext
 # Local image build on a subscribed RHEL 9 aarch64 box, from the repo root. Each layer FROM the
 # one before it; the workflow passes BASE_IMAGE as a digest. Export the repository variables'
 # values (decision 9) under the same names first; the Containerfiles have no defaults.
-sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev \
+sudo podman build -f base/Containerfile         -t localhost/ultron-bootc-base:dev \
     --build-arg BASE=$JETPACK_IMAGE --build-arg RHEL_VERSION=$RHEL_VERSION \
     --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION --build-arg JTOP_VER=$JTOP_VERSION .
-sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
+sudo podman build -f bound-images/Containerfile -t localhost/ultron-bootc-bound-images:dev \
     --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg ACM_VER=$ACM_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password

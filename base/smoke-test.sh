@@ -1,6 +1,6 @@
 #!/bin/bash
 # Checks run inside the republished vendor image. Fed on stdin:
-#   podman run --rm -i "$IMAGE:$TAG" bash -s < base/smoke-test.base.sh
+#   podman run --rm -i "$IMAGE:$TAG" bash -s < base/smoke-test.sh
 #
 # Mostly the vendor image: a base bump that breaks these breaks the GPU everywhere.
 set -euo pipefail
