@@ -167,8 +167,8 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 - `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
   - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
     from `base/physically-bound-images/`.
-  - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr` (`/usr/local`
-    is machine state on bootc) `--only-binary=:all:` (the sdist's `setup.py` would install the
+  - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr`
+    `--only-binary=:all:` (the sdist's `setup.py` would install the
     unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so this layer needs
     entitlement. `jtop` is a client of `jtop.service` (`/run/jtop.sock`). The wheel ships
     the unit only as a template (`/usr/share/jetson_stats/`) saying `/usr/local/bin/jtop`, and
@@ -176,7 +176,13 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     that unit sat in `activating` forever. The build fixes the template's path and installs it
     as `/etc/systemd/system/jtop.service`, enabled: in `/etc` because that is the path jtop
     checks (a symlink there to `/usr/lib` is `bad` to systemd). The smoke test fails unless the
-    unit's `ExecStart` binary is executable. Whether `jtop` reaches the driver is unverified.
+    unit's `ExecStart` binary is executable. The service then keeps its settings
+    (`config.json`, the stored `jetson_clocks` state) in `sys.base_prefix + /local/jtop`,
+    creating it on start: `/usr/local/jtop`. **`/usr/local` here is a plain directory in the
+    read-only `/usr`**, not a link to `/var/usrlocal` (the start died with `EROFS` on
+    hardware), so the build links `/usr/local/jtop` → `/var/lib/jtop`, which `tmpfiles.d`
+    creates; the build fails if `/usr/local` ever becomes a link, and the smoke test asks jtop
+    for the folder and expects it under `/var`. Whether `jtop` reaches the driver is unverified.
   - `flightctl-agent` from `rhacm-${ACM_VER}-for-rhel-9-$(uname -m)-rpms`
     (`ACM_VER=2.15`, match the hub), no weak deps. Drop-ins key both
     the agent and `bootc-fetch-apply-updates.service` on `/etc/flightctl/config.yaml`: agent
