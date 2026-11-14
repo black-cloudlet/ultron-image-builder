@@ -65,8 +65,14 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
 1. **Flashing station is RHEL, not Ubuntu.** Ubuntu + SDK Manager was evaluated and dropped.
    NVIDIA validates `flash.sh` only on Ubuntu; QSPI-only flashing works on RHEL and is
    confirmed on our hardware, but it is unsupported — say so in docs.
-2. **RHEL 9.8 + JetPack 6.x is the only GA combination.** RHEL 10 is not viable (no NVIDIA
-   RHEL 10 L4T repo; a kmod built for 5.14 will not load on 6.12). Do not propose it.
+2. **RHEL 9.8 + JetPack 6.x, not RHEL 10.** Since 2026-11 Red Hat ships a GA RHEL 10.2 image
+   too (`registry.redhat.io/nvidia/nvidia-jetpack-for-rhel10:7.2.1_6.12.0-211.72.1_…`, JetPack
+   7.2.1, L4T r39.2.1, kmod built for 6.12; r39.2.1 supports our P3701-0000). Reviewed and
+   deferred: MicroShift on RHEL 10.2 is 4.22 Technology Preview only (GA expected with 5.0),
+   every node needs a QSPI re-flash from r39.2.1 (NVIDIA validates flashing only from Ubuntu
+   22.04/24.04; QSPI-only from RHEL is untried on r39) and a reinstall, the kiosk's display fixes
+   must be found again on GNOME's Wayland-only stack, and Triton needs a CUDA 13 tag. Revisit
+   when MicroShift is GA on RHEL 10.
 3. **QSPI-only flash, then RHEL bootc on the eMMC.** QSPI carries UEFI and boot firmware only;
    the anaconda ISO installs RHEL to `mmcblk0` (64 GB eMMC). Nothing from the BSP rootfs lands
    on the device. The working command:
@@ -80,26 +86,49 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    The eMMC is a real constraint: ~58 GiB usable, and poor endurance and latency under etcd's
    fsyncs and write-heavy PVCs. The upgrade path is an M.2 NVMe (`ignoredisk
    --only-use=nvme0n1`, larger root), worth doing before real apps and a model store land.
-4. **Base image is Red Hat's JetPack-for-RHEL bootc image**, not `rhel-bootc` + NVIDIA RPMs:
+4. **Base image is Red Hat's GA JetPack-for-RHEL bootc image**, not `rhel-bootc` + NVIDIA RPMs:
    ```
-   quay.io/redhat-user-workloads/jetpack-for-rhel-tenant/rhel-98-bootc:6.2.2_5.14.0-687.42.1_090326003719
+   registry.redhat.io/nvidia/nvidia-jetpack-for-rhel9:6.2.3_5.14.0-687.58.1_102226125727
    ```
-   JetPack 6.2.2, kernel `5.14.0-687.42.1.el9_8`. Inspected 2026-09-03 (arm64 only, bootc
-   1.16.4): `/etc/nv_tegra_release` is **R36 REVISION 5.0** (L4T r36.5.0); it carries the
+   JetPack 6.2.3, kernel `5.14.0-687.58.1.el9_8`, RHEL 9.8 throughout, L4T **R36.5.2**, bootc
+   1.13.0 (run 7). Replaced the Konflux build `quay.io/…/rhel-98-bootc:6.2.2_…` (2026-11);
+   pulled with the `RH_REGISTRY_*` login. The smoke test fails unless the L4T line is R36
+   REVISION 5.x (decision 5). **No container toolkit**: Red Hat dropped
+   `nvidia-container-toolkit-base` from every build after Konflux
+   `6.2.2_…_090326003719` (bisected: `…_090326134659`, same day, is the first without), GA
+   included, but still enables `nvidia-ctk.service` with `ConditionPathExists=/usr/bin/nvidia-ctk`,
+   so without it the unit skips silently and no CDI spec exists. `base/` installs
+   `nvidia-container-toolkit-base-1.20.0-1` (what that last build carried) from NVIDIA's repo,
+   `gpgcheck` and `repo_gpgcheck` on, the repo file not left behind. The later Konflux 6.2.3
+   builds are RHEL **9.9** userspace on a 9.8 kernel (`redhat.version-id=9.9`); not used.
+   **CVEs wait for Red Hat's rebuilds** (the
+   maintainer's call): bump the tag, never `dnf upgrade`. At the switch: grade D, 5 Critical,
+   all fixed in RHEL already. Pin the full tag, never `latest`. Source:
+   `gitlab.com/redhat/rhel/sst/orin-sidecar/rhel-jetpack-for-jetson-bootc`.
+   Inspected on the quay 6.2.2 image (2026-09/10): **R36 REVISION 5.0**; the
    `nvidia-jetpack-for-rhel-9.8-*` packages, `nvidia-container-toolkit-base` (CDI, no
    `nvidia-container-cli`), `nvgpu.ko`, `nvidia-ctk.service` (writes `/etc/cdi/nvidia.yaml` at
-   boot), `nvpmodel`, the console kargs, `podman`, `skopeo` and `subscription-manager`. It is
-   built on `rhel9/rhel-bootc` 9.8 (labels), whose layers are already rpm-ostree-chunked (67
-   layers); NVIDIA's part sits on top unchunked. Re-inspected 2026-10-06: it carries
-   `/usr/libexec/bootc-base-imagectl` (no RPM owns it) with a `rechunk` verb, and
-   `rpm-ostree-2026.1-6.el9_8`; no `chunkah`. So our
-   layers add **no** NVIDIA packages, CDI unit, kargs or `nvgpu.ko` guard. Pin the full tag,
-   never `latest`. Source: `gitlab.com/redhat/rhel/sst/orin-sidecar/rhel-jetpack-for-jetson-bootc`.
+   boot), `nvpmodel`, the console kargs, `podman`, `skopeo`, `subscription-manager`, and
+   `/usr/libexec/bootc-base-imagectl` (no RPM owns it) with a `rechunk` verb. Built on
+   `rhel9/rhel-bootc` 9.8, already rpm-ostree-chunked; NVIDIA's part sits on top unchunked.
+   So our layers add no NVIDIA packages but the toolkit, and no CDI unit, kargs or `nvgpu.ko`
+   guard.
 5. **The BSP must match the image's L4T line**: flash the QSPI from **R36.5.x** (the staged
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
    runner gives native aarch64 (qemu is not viable), the container gives RHEL's
-   podman, and `subscription-manager register` gives entitlement. Images go to
+   podman, and `subscription-manager register` gives entitlement. The builder is untagged
+   `ubi9/ubi` and follows RHEL 9: it registers first and disables `ubi.repo` before
+   installing podman, because UBI's repos are a subset that once shipped a podman whose
+   netavark required `aardvark-dns >= 3:1.17` with only `2:1.17.1` there (2026-11). A
+   release lock on the builder would not reach a build anyway: inside one,
+   subscription-manager runs in container mode and `dnf` takes `$releasever` from the image,
+   RHEL's `9`, so run 5 (2026-11-11) put NetworkManager, bind and sos from 9.9 onto the 9.8
+   base. `base/` writes `RHEL_VERSION` to `/etc/dnf/vars/releasever` after checking it is the
+   vendor image's own `VERSION_ID`; every layer inherits it. The builder keeps RHEL's
+   default signature policy: `registry.redhat.io` pulls (the vendor base, bib) must carry a
+   Red Hat GPG signature, as the MicroShift layer's embeds already did under the vendor
+   image's own policy. Images go to
    GHCR, then into the air-gapped registry by hand. Pattern from
    `redhat-et/edge-ai-image-pipelines` (Apache-2.0). The host's `/mnt` is mounted as
    `/scratch`, with `/var/lib/containers`, `/var/tmp` and the ISO output bound onto it — for
@@ -109,8 +138,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    reports `Native Overlay Diff:true`.
 7. **Five layers for microshift, one directory per Kubernetes variant.**
    - `base/Containerfile.base` republishes the pinned vendor image under our name, plus field
-     tools (`tcpdump` and the like).
-   - `base/Containerfile.podman` adds the physically-bound-images machinery and `jtop`.
+     tools (`tcpdump` and the like) and `jtop`.
+   - `base/Containerfile.podman` adds the physically-bound-images machinery.
      Published as `ultron-bootc-bound-images` from CI job `bound_images` (an underscore:
      `needs.bound-images` parses as a subtraction and resolves to nothing).
    - `kiosk/` adds GDM, GNOME Kiosk's script session, Firefox and the `kiosk` user. Shared,
@@ -125,8 +154,24 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    `ultron-bootc-<name>` and the next builds on its **digest**. CI is two reusable
    workflows (`build-image.yml`, `build-iso.yml`) plus `ultron.yml`, chaining base →
    bound-images → kiosk → microshift → services → ISO. The build context is the repo root. Every
-   layer registers with subscription-manager, even the one that installs nothing: one code path.
+   layer registers with subscription-manager, even `services/`, which installs no RPMs: one code path.
 8. **NVIDIA BSP download stays manual** (documented in `README.md`). Scripting it was fragile.
+9. **Every version is a GitHub repository variable** (Settings → Secrets and variables →
+   Actions → Variables), the only place it is set: `ultron.yml` passes each as a build arg,
+   the Containerfiles have no defaults and fail at first use without one (`${X:?}`), and
+   `build-image.yml` fails a job whose build arg arrived empty before it registers.
+   | Variable | Build arg | Used in |
+   |---|---|---|
+   | `JETPACK_IMAGE` | `BASE` | `base/Containerfile.base`, the vendor tag in full |
+   | `RHEL_VERSION` | `RHEL_VERSION` | base's `releasever` lock (must equal the vendor image's release); its major for the `-for-rhel-N-` repos in `base/Containerfile.podman` and `microshift/`, `ksvalidator`, bib |
+   | `NVIDIA_CTK_VERSION` | `NVCTK_VER` | base, `nvidia-container-toolkit-base` (`1.20.0-1` form) |
+   | `JTOP_VERSION` | `JTOP_VER` | base, jetson-stats |
+   | `ACM_VERSION` | `ACM_VER` | `base/Containerfile.podman` |
+   | `MICROSHIFT_VERSION`, `NVIDIA_DEVICE_PLUGIN_VERSION` | `USHIFT_VER`, `NVIDIA_DEVICE_PLUGIN_VER` | `microshift/` |
+   | `CERT_MANAGER_VERSION`, `EXTERNAL_SECRETS_VERSION`, `KSERVE_VERSION` | `CERT_MANAGER_VER`, `EXTERNAL_SECRETS_VER`, `KSERVE_VER` | `services/` |
+   Bump `JETPACK_IMAGE` and `RHEL_VERSION` together; a mismatch fails the base build. Not a
+   variable: the Triton tag (an `image:` in `040-triton-runtime/`), and the RHEL major in the
+   builder's `ubi9/ubi` (a job container cannot be computed from a value).
 
 ## What is done and working
 
@@ -147,27 +192,35 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 
 ### Image + ISO pipeline
 
-- `base/Containerfile.base` — the pinned vendor image, field tools and `bootc container lint`.
-  Its smoke test checks the vendor image: `skopeo`, `podman`, and `lvm2` (root is on an LV and
-  LVMS needs `vgs`; nothing here installs it).
+- `base/Containerfile.base` — the pinned vendor image, the 9.8 `releasever` lock, the container
+  toolkit (decision 4), field tools, `jtop` and `bootc container lint`. Its smoke test checks the vendor
+  image: `skopeo`, `podman`, and `lvm2` (root is on an LV and LVMS needs `vgs`; nothing here
+  installs it); and that `nvidia-ctk.service`'s `ConditionPathExists` binary exists and it and
+  `nvidia-cdi-refresh.{path,service}` are enabled, as on the last vendor build with the toolkit.
   - Field tools (a node has no repo and a read-only `/usr`): `tcpdump`, `mtr`, `nmap-ncat`,
     `pciutils`, `strace`, `sysstat`, `tmux`, `usbutils`; `bind-utils`, `ethtool`, `lsof`,
     `NetworkManager-tui`, `psmisc` and `sos` come with the vendor image, listed so a bump cannot
     drop them. ~12 MiB. `sar` logs to `/var/log/sa` every 10 min for 28 days (RHEL's preset).
     Not added: `htop`/`iftop` (EPEL), `tshark`, `nvme-cli` (with the NVMe).
-- `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
-  - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
-    from `base/physically-bound-images/`.
-  - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr` (`/usr/local`
-    is machine state on bootc) `--only-binary=:all:` (the sdist's `setup.py` would install the
-    unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so this layer needs
+  - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr`
+    `--only-binary=:all:` (the sdist's `setup.py` would install the
+    unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so the layer needs
     entitlement. `jtop` is a client of `jtop.service` (`/run/jtop.sock`). The wheel ships
     the unit only as a template (`/usr/share/jetson_stats/`) saying `/usr/local/bin/jtop`, and
     root's first `jtop` copies it into `/etc/systemd/system` when none is there: on hardware
     that unit sat in `activating` forever. The build fixes the template's path and installs it
     as `/etc/systemd/system/jtop.service`, enabled: in `/etc` because that is the path jtop
     checks (a symlink there to `/usr/lib` is `bad` to systemd). The smoke test fails unless the
-    unit's `ExecStart` binary is executable. Whether `jtop` reaches the driver is unverified.
+    unit's `ExecStart` binary is executable. The service then keeps its settings
+    (`config.json`, the stored `jetson_clocks` state) in `sys.base_prefix + /local/jtop`,
+    creating it on start: `/usr/local/jtop`. **`/usr/local` here is a plain directory in the
+    read-only `/usr`**, not a link to `/var/usrlocal` (the start died with `EROFS` on
+    hardware), so the build links `/usr/local/jtop` → `/var/lib/jtop`, which `tmpfiles.d`
+    creates; the build fails if `/usr/local` ever becomes a link, and the smoke test asks jtop
+    for the folder and expects it under `/var`. Whether `jtop` reaches the driver is unverified.
+- `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
+  - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
+    from `base/physically-bound-images/`.
   - `flightctl-agent` from `rhacm-${ACM_VER}-for-rhel-9-$(uname -m)-rpms`
     (`ACM_VER=2.15`, match the hub), no weak deps. Drop-ins key both
     the agent and `bootc-fetch-apply-updates.service` on `/etc/flightctl/config.yaml`: agent
@@ -313,6 +366,12 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     - `sleep`, `suspend`, `hibernate`, `hybrid-sleep` targets masked: GNOME's login screen may
       suspend on idle, and a suspended node stops MicroShift. Blanking is left at GNOME's
       default (the maintainer's call).
+    - **GPU rail-gating off** (`kiosk/gpu-railgate.rules`, udev): an idle GPU powers off
+      (tegrastats `GR3D_FREQ 0%@[0,0]`) and the next frame waits for it, so the login screen's
+      pointer stalled over the user entry (jetson-1, 2026-11; a `min_freq` floor did not help).
+      Inferred, not proven: no hand test of `railgate_enable` = 0 was reported. Node-wide,
+      ~0.4 W. `railgate_enable`, not `power/control`, which nvpmodel writes (unchecked here).
+      Unbuilt.
   - **Input**: `usbhid`, `hid-generic`, `evdev` built in; `hid-multitouch`, `wacom`, `hid-elan`
     as modules, so USB keyboards, mice and HID touch screens work through libinput; non-HID
     touch controllers (`CONFIG_INPUT_TOUCHSCREEN` off) do not. Layout `us` from the kickstart.
@@ -354,7 +413,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     `video`, the loader cache has the library NVIDIA's EGL vendor file names, `matchpathcon`
     gives `dri_device_t` for `nvmap`, `nvhost-*` and `nvgpu/*`, `/etc/pam.d/login`'s first
     `account` line refuses `kiosk`, `10-jetson-kiosk.rules` is the first polkit rule by name,
-    and the policy parses.
+    no other udev rule or nvpmodel config writes `railgate_enable`, and the policy parses.
     Locally: the hash step against good, missing, empty, plaintext and multi-line input; sysusers
     with the credential and tmpfiles against a scratch root (the hash reaches `shadow`; an
     existing `kiosk` keeps its password; escapes expand, link lands), and the
@@ -474,7 +533,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     mutator skips, so no InferenceService may live in `kserve`. No Pod Security labels: one was
     tried and removed, since it only differs from restricted-v2 once a wider SCC is granted.
   - `040-triton-runtime/` — `triton-igpu`: `-py3-igpu` image (`25.02`, **unverified against
-    JetPack 6.2.2**), one `nvidia.com/gpu`, no `runAsUser`, restricted security context
+    JetPack 6.2.3**), one `nvidia.com/gpu`, no `runAsUser`, restricted security context
     spelled out, 8Gi 1:1, CPU 1 → 4, TensorRT and ONNX. Pod-wide settings such as
     `supplementalGroups` go on the InferenceService. Plans load only in this image's TensorRT:
     build them with its `trtexec` on an Orin, and rebuild when the tag moves.
@@ -644,12 +703,13 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `ghcr.io/<owner>/ultron-bootc-<name>`, output the digest-pinned ref, and report the
   layer size as a `::notice`. Tags: `<YYYYMMDD-sha8>` on every build; `latest` and `stable`
   only when `GITHUB_REF` is `refs/heads/main` (the caller's ref), so dispatching a branch to
-  test it moves neither. No MicroShift-version tag: `USHIFT_VER` is set once, as the
-  Containerfile's `ARG` default. The `also-as` name is validated before the build. `also-as` pushes
+  test it moves neither. No MicroShift-version tag: it is the `MICROSHIFT_VERSION`
+  repository variable (decision 9). The `also-as` name is validated before the build. `also-as` pushes
   the same tags under a second name: `services` is also `ghcr.io/<owner>/ultron-bootc`, the finished
-  OS under the project's name. Its digest should equal the first (same compressed layers); a
-  mismatch is a `::warning`, not a failure, since nothing builds on it. The ISO and the chain
-  use `ultron-bootc-services`.
+  OS under the project's name, output as `also-image-ref` (its own digest). Its digest should
+  equal the first (same compressed layers); a mismatch is a `::warning`, not a failure. The
+  chain builds on `ultron-bootc-services`; the ISO installs `ultron-bootc` by digest, so it
+  names no layer.
   `rechunk: true` (services only) runs `bootc-base-imagectl rechunk` between build and smoke
   test, inside the image it rewrites (that is where the tool and `rpm-ostree` are), with the
   builder's store and `storage.conf` mounted in; it wraps `rpm-ostree experimental compose
@@ -665,7 +725,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   17 images) and every other file no RPM owns, rpmdb and `/etc` edits included. So only the
   ~3 GB of RPM content splits per package; the big layer most likely changes on every build.
   Still unverified: whether two builds of unchanged content share any digests.
-  **What a node follows is not settled.** bib installs the services layer pinned by digest
+  **What a node follows is not settled.** bib installs `ultron-bootc` pinned by digest
   from GHCR, so `bootc upgrade` has nothing to re-resolve and could not reach it anyway.
   `ostreecontainer` has no `--target-imgref`. Pointing the origin at the air-gapped `stable`
   needs a one-time `bootc switch` or a retag before bib; the node also needs
@@ -686,7 +746,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   `base/**`, `kiosk/**`, `microshift/**`, `services/**`, `config.toml` or the workflows, and on
   `workflow_dispatch`. **Nothing runs on a pull request.**
 
-**Secrets**: `RH_REGISTRY_USER`/`RH_REGISTRY_PASSWORD` (bib pull), `RHSM_USERNAME`/`RHSM_PASSWORD`
+**Secrets**: `RH_REGISTRY_USER`/`RH_REGISTRY_PASSWORD` (vendor base and bib pulls), `RHSM_USERNAME`/`RHSM_PASSWORD`
 (every job registers, and unregisters in `if: always()`), `OPENSHIFT_PULL_SECRET` (build-time
 image pulls, never in the image), `JETSON_SSH_PUBKEY`, `JETSON_PASSWORD_HASH`
 (`openssl passwd -6`), `JETSON_KIOSK_PASSWORD_HASH` (`openssl passwd -6`, the kiosk login; in
@@ -706,7 +766,9 @@ hardware.
 
 1. Dispatch `ultron.yml`, `dd` the ISO, boot the devkit (QSPI from R36.5.x). Check
    `bootc status` (expect a digest-pinned GHCR origin, which cannot upgrade), `lsmod | grep
-   nvgpu`, `nvidia-ctk cdi list` → `nvidia.com/gpu=all`, a GPU container, `systemctl
+   nvgpu`, `nvidia-ctk cdi list` → `nvidia.com/gpu=all` (the vendor's unit writes `/etc/cdi`,
+   the toolkit's `nvidia-cdi-refresh` `/var/run/cdi`, as on the old image; neither failed),
+   a GPU container, `systemctl
    is-enabled bootc-fetch-apply-updates.timer`, whether `jtop` works, and that
    `journalctl -b -u greenboot-healthcheck` ends green after a `bootc upgrade` (the
    rollback above). Separately, dispatch twice with no change and compare the `services`
@@ -776,7 +838,8 @@ hardware.
    screen all drive the page, and whether the login screen offers an on-screen keyboard on touch;
    Shift held while Firefox restarts opens no troubleshoot dialog, Ctrl-P prints nothing;
    `journalctl -b | grep -E 'avc: +denied'` clean (`ausearch` is not installed); `systemctl
-   suspend` refused; `tegrastats` and
+   suspend` refused; `railgate_enable` is `0` and the pointer does not stall over the user
+   entry; `tegrastats` and
    Triton's p99 latency with the screen on and off. If the frontend plays H.264, it is a black
    box.
 7. Later layers `FROM` the k8s image: a `bootc switch` unit for the air-gapped registry,
@@ -786,7 +849,7 @@ hardware.
 `device-ca` (upstream aggregates `Certificate` create into every namespace's admin/edit, so an
 `isCA` sub-CA too; approver-policy or `nameConstraints` would bound it), and whether
 `ca-bundle` belongs in every namespace or only labelled ones; the Triton `-igpu` tag for
-JetPack 6.2.2 and the 8Gi slice size; where InferenceServices live, and whether models get their
+JetPack 6.2.3 and the 8Gi slice size; where InferenceServices live, and whether models get their
 own layer above `services/`; what External Secrets reads from; NVMe before real apps land;
 registration vs. a self-hosted runner; per-device address and hostname before a second node;
 how `/etc/flightctl/config.yaml` reaches a node, and greenboot; `bootc switch` vs. retag for the
@@ -887,9 +950,13 @@ lsusb | grep 0955
 cd /opt/nvidia/Linux_for_Tegra && sudo ./flash.sh p3737-0000-p3701-0000-qspi external
 
 # Local image build on a subscribed RHEL 9 aarch64 box, from the repo root. Each layer FROM the
-# one before it; the workflow passes BASE_IMAGE as a digest.
-sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev .
+# one before it; the workflow passes BASE_IMAGE as a digest. Export the repository variables'
+# values (decision 9) under the same names first; the Containerfiles have no defaults.
+sudo podman build -f base/Containerfile.base     -t localhost/ultron-bootc-base:dev \
+    --build-arg BASE=$JETPACK_IMAGE --build-arg RHEL_VERSION=$RHEL_VERSION \
+    --build-arg NVCTK_VER=$NVIDIA_CTK_VERSION --build-arg JTOP_VER=$JTOP_VERSION .
 sudo podman build -f base/Containerfile.podman   -t localhost/ultron-bootc-bound-images:dev \
+    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg ACM_VER=$ACM_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-base:dev .
 openssl passwd -6 > /tmp/kiosk-hash   # the kiosk login's password
 sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk:dev \
@@ -897,9 +964,13 @@ sudo podman build -f kiosk/Containerfile         -t localhost/ultron-bootc-kiosk
     --build-arg BASE_IMAGE=localhost/ultron-bootc-bound-images:dev .
 sudo podman build -f microshift/Containerfile    -t localhost/ultron-bootc-microshift:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
+    --build-arg RHEL_VERSION=$RHEL_VERSION --build-arg USHIFT_VER=$MICROSHIFT_VERSION \
+    --build-arg NVIDIA_DEVICE_PLUGIN_VER=$NVIDIA_DEVICE_PLUGIN_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-kiosk:dev .
 sudo podman build -f services/Containerfile      -t localhost/ultron-bootc-services:dev \
     --secret id=pullsecret,src=$HOME/pull-secret.json \
+    --build-arg CERT_MANAGER_VER=$CERT_MANAGER_VERSION \
+    --build-arg EXTERNAL_SECRETS_VER=$EXTERNAL_SECRETS_VERSION --build-arg KSERVE_VER=$KSERVE_VERSION \
     --build-arg BASE_IMAGE=localhost/ultron-bootc-microshift:dev .
 # Smoke tests are fed on stdin, the same way the workflow runs them
 podman run --rm -i localhost/ultron-bootc-services:dev bash -s < services/smoke-test.sh
@@ -916,7 +987,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
 # -> output/bootiso/install.iso
 
 # On the device
-cat /etc/nv_tegra_release      # R36 REVISION 5.0
+cat /etc/nv_tegra_release      # R36 REVISION 5.x
 lsmod | grep nvgpu
 systemctl status nvidia-ctk && nvidia-ctk cdi list   # expect nvidia.com/gpu=all
 bootc status
