@@ -137,8 +137,8 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    reports `Native Overlay Diff:true`.
 7. **Five layers for microshift, one directory per Kubernetes variant.**
    - `base/Containerfile.base` republishes the pinned vendor image under our name, plus field
-     tools (`tcpdump` and the like).
-   - `base/Containerfile.podman` adds the physically-bound-images machinery and `jtop`.
+     tools (`tcpdump` and the like) and `jtop`.
+   - `base/Containerfile.podman` adds the physically-bound-images machinery.
      Published as `ultron-bootc-bound-images` from CI job `bound_images` (an underscore:
      `needs.bound-images` parses as a subtraction and resolves to nothing).
    - `kiosk/` adds GDM, GNOME Kiosk's script session, Firefox and the `kiosk` user. Shared,
@@ -191,7 +191,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 ### Image + ISO pipeline
 
 - `base/Containerfile.base` — the pinned vendor image, the 9.8 `releasever` lock, the container
-  toolkit (decision 4), field tools and `bootc container lint`. Its smoke test checks the vendor
+  toolkit (decision 4), field tools, `jtop` and `bootc container lint`. Its smoke test checks the vendor
   image: `skopeo`, `podman`, and `lvm2` (root is on an LV and LVMS needs `vgs`; nothing here
   installs it); and that `nvidia-ctk.service`'s `ConditionPathExists` binary exists and it and
   `nvidia-cdi-refresh.{path,service}` are enabled, as on the last vendor build with the toolkit.
@@ -200,12 +200,9 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     `NetworkManager-tui`, `psmisc` and `sos` come with the vendor image, listed so a bump cannot
     drop them. ~12 MiB. `sar` logs to `/var/log/sa` every 10 min for 28 days (RHEL's preset).
     Not added: `htop`/`iftop` (EPEL), `tshark`, `nvme-cli` (with the NVMe).
-- `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
-  - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
-    from `base/physically-bound-images/`.
   - `jetson-stats` (`jtop`, pinned `JTOP_VER`) via `pip3 install --prefix=/usr`
     `--only-binary=:all:` (the sdist's `setup.py` would install the
-    unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so this layer needs
+    unit and `groupadd jtop` itself, as root, in the build). `python3-pip` comes from RHEL repos, so the layer needs
     entitlement. `jtop` is a client of `jtop.service` (`/run/jtop.sock`). The wheel ships
     the unit only as a template (`/usr/share/jetson_stats/`) saying `/usr/local/bin/jtop`, and
     root's first `jtop` copies it into `/etc/systemd/system` when none is there: on hardware
@@ -219,6 +216,9 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
     hardware), so the build links `/usr/local/jtop` → `/var/lib/jtop`, which `tmpfiles.d`
     creates; the build fails if `/usr/local` ever becomes a link, and the smoke test asks jtop
     for the folder and expects it under `/var`. Whether `jtop` reaches the driver is unverified.
+- `base/Containerfile.podman` — `FROM` that via `ARG BASE_IMAGE`:
+  - `embed_image.sh`, `copy_embedded_images.sh` and `copy-embedded-images.service`, `COPY`d
+    from `base/physically-bound-images/`.
   - `flightctl-agent` from `rhacm-${ACM_VER}-for-rhel-9-$(uname -m)-rpms`
     (`ACM_VER=2.15`, match the hub), no weak deps. Drop-ins key both
     the agent and `bootc-fetch-apply-updates.service` on `/etc/flightctl/config.yaml`: agent

@@ -91,9 +91,9 @@ The image is built as a chain of five container images. Each is `FROM` the one b
 digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-bootc-<name>`:
 
 ```
- base            Red Hat's JetPack-for-RHEL image, republished under our name
+ base            Red Hat's JetPack-for-RHEL image, republished under our name, + jtop
    │
- bound-images    image-embedding machinery + jtop + Edge Manager agent
+ bound-images    image-embedding machinery + Edge Manager agent
    │
  kiosk           GDM + GNOME Kiosk + Firefox on the DisplayPort output
    │
@@ -106,8 +106,8 @@ digest, and each is pushed to GHCR on its own as `ghcr.io/black-cloudlet/ultron-
 
 | Layer | Built from | Published as | Adds | Needs RHEL entitlement |
 |---|---|---|---|---|
-| base | `base/Containerfile.base` | `ultron-bootc-base` | nothing: a pure republish of the vendor image | no (registers anyway, one code path) |
-| bound-images | `base/Containerfile.podman` | `ultron-bootc-bound-images` | the scripts and boot unit that embed and restore container images; `jtop`; the Edge Manager agent | yes (`python3-pip`, `rhacm` repo) |
+| base | `base/Containerfile.base` | `ultron-bootc-base` | the vendor image, plus the `dnf` release lock, NVIDIA's container toolkit, field tools and `jtop` | yes (field tools, `python3-pip`) |
+| bound-images | `base/Containerfile.podman` | `ultron-bootc-bound-images` | the scripts and boot unit that embed and restore container images; the Edge Manager agent | yes (`rhacm` repo) |
 | kiosk | `kiosk/Containerfile` | `ultron-bootc-kiosk` | GDM, GNOME Kiosk, Firefox, the `kiosk` user | yes (AppStream) |
 | microshift | `microshift/Containerfile` | `ultron-bootc-microshift` | MicroShift, firewall, node networking, GPU device plugin, 9+ embedded images | yes (`rhocp` + `fast-datapath` repos) |
 | services | `services/Containerfile` | `ultron-bootc-services`, and `ultron-bootc` | four kustomize roots applied by MicroShift, 7 embedded images | no RPMs |
@@ -125,9 +125,9 @@ changes rarely, and putting it on top instead would reinstall Firefox on every s
 
 ### base: the vendor image, republished
 
-`base/Containerfile.base` is `FROM` the pinned JetPack-for-RHEL tag, plus three things: a
+`base/Containerfile.base` is `FROM` the pinned JetPack-for-RHEL tag, plus four things: a
 `releasever` file locking every layer's `dnf` to RHEL 9.8 (the vendor image's release; without
-it a build follows the newest RHEL 9), NVIDIA's container toolkit, and the field tools. It exists
+it a build follows the newest RHEL 9), NVIDIA's container toolkit, the field tools, and `jtop`. It exists
 so the pin lives in exactly one file and the air-gapped registry gets a name we control.
 
 The vendor image contains the Tegra kernel modules (`nvgpu.ko`), the JetPack user space, the
@@ -141,28 +141,37 @@ signed repository; it is the one NVIDIA package added here. The tag is pinned in
 **Smoke test** (`base/smoke-test.base.sh`) checks the vendor image still is what we expect: bootc,
 `/etc/nv_tegra_release` (R36.5.x, to match the QSPI), the kmod and container-toolkit packages,
 that the vendor's CDI unit finds the toolkit and is enabled, `nvgpu.ko`, `skopeo`, `podman`, and
-`lvm2` (the root filesystem is on LVM and MicroShift's storage needs `vgs`).
+`lvm2` (the root filesystem is on LVM and MicroShift's storage needs `vgs`). For `jtop` it checks
+the unit runs a binary that exists and is enabled, and that jtop's settings folder resolves to
+`/var/lib/jtop`.
 
-### bound-images: embedding machinery, jtop and the Edge Manager agent
+**`jtop`** (jetson-stats, pinned by `JTOP_VERSION`) is a Jetson monitoring tool, so it sits with
+the rest of the node's tooling here. `pip3 install --prefix=/usr --only-binary=:all:`: the
+wheel runs no code at install, where the sdist's `setup.py` would install a unit and a group
+itself. `jtop` is a client of `jtop.service`. The wheel ships that unit only as a template naming
+`/usr/local/bin/jtop`, so the build fixes the path and installs it as
+`/etc/systemd/system/jtop.service`, enabled, the path jtop checks before installing its own
+copy. The service keeps its settings in `/usr/local/jtop`, which is read-only on a node
+(`/usr/local` is a plain directory in `/usr` here), so the build links it to `/var/lib/jtop`,
+which `tmpfiles.d` creates at boot.
+
+### bound-images: embedding machinery and the Edge Manager agent
 
 `base/Containerfile.podman`. It shares `base/` because it is infrastructure under every
-variant, not a variant of its own. Three things:
+variant, not a variant of its own. Two things:
 
 - **Physically bound images.** Three files from `base/physically-bound-images/`:
   `embed_image.sh` (build time: copy one image into a cache inside `/usr`),
   `copy_embedded_images.sh` and `copy-embedded-images.service` (boot time: restore that cache
   into the container store). How they work is in
   [How a node runs with no registry](#how-a-node-runs-with-no-registry).
-- **`jtop`** (jetson-stats, pinned by `JTOP_VERSION`), installed with `pip3 install --prefix=/usr`:
-  on bootc, `/usr/local` is per-machine state and would not ship in the image.
 - **Edge Manager agent** (`flightctl-agent` from ACM, `ACM_VERSION`, no weak deps).
   Enabled but idle until `/etc/flightctl/config.yaml` exists; while it does,
   `bootc-fetch-apply-updates.service` is skipped, since Edge Manager owns OS updates.
   The package's greenboot check passes while the agent is unenrolled; unguarded, it
   failed every upgrade and greenboot rolled it back.
 
-Its smoke test checks the machinery and the agent are installed and enabled and `jtop` is
-present. It also fails if this layer embedded any image, since anything embedded here would be
+Its smoke test checks the machinery and the agent are installed and enabled. It also fails if this layer embedded any image, since anything embedded here would be
 paid for by every variant.
 
 The file name and the image name differ: `Containerfile.podman` builds the image published as
@@ -768,10 +777,10 @@ The design record, with every decision and why, is `CLAUDE.md`.
 | Path | What it is |
 |---|---|
 | `config.toml` | installer config: the kickstart, ISO label, boot menu timeout |
-| `base/Containerfile.base` | layer 1: the pinned JetPack-for-RHEL image, republished |
-| `base/smoke-test.base.sh` | checks the vendor image is what we expect |
-| `base/Containerfile.podman` | layer 2: embedding machinery + jtop + Edge Manager agent |
-| `base/smoke-test.podman.sh` | checks the machinery, jtop and the agent, and that nothing was embedded here |
+| `base/Containerfile.base` | layer 1: the pinned JetPack-for-RHEL image, republished, + field tools and jtop |
+| `base/smoke-test.base.sh` | checks the vendor image is what we expect, and jtop |
+| `base/Containerfile.podman` | layer 2: embedding machinery + Edge Manager agent |
+| `base/smoke-test.podman.sh` | checks the machinery and the agent, and that nothing was embedded here |
 | `base/physically-bound-images/embed_image.sh` | build time: copy one image into the cache in `/usr` |
 | `base/physically-bound-images/copy_embedded_images.sh` | boot time: restore the cache, prune what an older OS left |
 | `base/physically-bound-images/copy-embedded-images.service` | runs it once per boot, before MicroShift |
