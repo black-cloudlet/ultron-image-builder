@@ -1,0 +1,85 @@
+# app's password, as Secret valkey-credentials (username, password), into every
+# namespace labelled ultron/valkey-client=true, new ones included. Only
+# cluster-admin can label a namespace, so the label is the grant. root's
+# password is never served: the Role names only app's Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: valkey-credentials-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: valkey-credentials-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["valkey-app-password"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: valkey-credentials-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: valkey-credentials-reader
+subjects:
+  - kind: ServiceAccount
+    name: valkey-credentials-reader
+    namespace: valkey
+---
+# conditions: a ClusterSecretStore can be named from any namespace, so without
+# them anyone allowed to create an ExternalSecret anywhere could read app's
+# password. Same label as the ClusterExternalSecret below.
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: valkey-credentials
+spec:
+  conditions:
+    - namespaceSelector:
+        matchLabels:
+          ultron/valkey-client: "true"
+  provider:
+    kubernetes:
+      remoteNamespace: valkey
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          namespace: valkey
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: valkey-credentials-reader
+          namespace: valkey
+---
+# refreshInterval: a rotated password reaches clients within the hour.
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata:
+  name: valkey-credentials
+spec:
+  externalSecretName: valkey-credentials
+  namespaceSelectors:
+    - matchLabels:
+        ultron/valkey-client: "true"
+  externalSecretSpec:
+    refreshInterval: 1h
+    secretStoreRef:
+      kind: ClusterSecretStore
+      name: valkey-credentials
+    target:
+      name: valkey-credentials
+      creationPolicy: Owner
+      template:
+        data:
+          username: app
+          password: "{{ .password }}"
+    data:
+      - secretKey: password
+        remoteRef:
+          key: valkey-app-password
+          property: password

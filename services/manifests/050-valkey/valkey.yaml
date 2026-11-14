@@ -46,15 +46,44 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: valkey
-      # The SHA-256 of users.acl and valkey.conf, written by the build: the
-      # generated objects keep one name, so this is what rolls the pod.
-      annotations:
-        ultron/valkey-config-sha256: "@VALKEY_CONFIG_SHA256@"
     spec:
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      # users.acl with the generated passwords' hashes, into memory: the
+      # template is in the ConfigMap, the passwords in their own Secrets, and
+      # only this container reads them.
+      initContainers:
+        - name: acl
+          image: docker.io/valkey/valkey:9.1.1-alpine3.24
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - /etc/valkey/render-acl.sh
+            - /etc/valkey/users.acl
+            - /run/valkey-passwords
+            - /etc/valkey-acl/users.acl
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 16Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/valkey
+              readOnly: true
+            - name: passwords
+              mountPath: /run/valkey-passwords
+              readOnly: true
+            - name: acl
+              mountPath: /etc/valkey-acl
       containers:
         - name: valkey
           image: docker.io/valkey/valkey:9.1.1-alpine3.24
@@ -118,10 +147,25 @@ spec:
         - name: config
           configMap:
             name: valkey-config
-        - name: acl
-          secret:
-            secretName: valkey-acl
+        - name: passwords
+          projected:
             defaultMode: 0444
+            sources:
+              - secret:
+                  name: valkey-root-password
+                  items:
+                    - key: password
+                      path: root
+              - secret:
+                  name: valkey-app-password
+                  items:
+                    - key: password
+                      path: app
+        # Memory, not disk: the hashes never touch the eMMC.
+        - name: acl
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         - name: tls
           secret:
             secretName: valkey-tls
