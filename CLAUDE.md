@@ -108,7 +108,14 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    R36.5.2 is fine), never r36.4.x — mismatched firmware and modules hang at boot.
 6. **Builds run in GitHub Actions on `ubuntu-24.04-arm`, inside a UBI 9 container.** The
    runner gives native aarch64 (qemu is not viable), the container gives RHEL's
-   podman, and `subscription-manager register` gives entitlement. Images go to
+   podman, and `subscription-manager register` gives entitlement. The builder is **9.8
+   throughout**, the vendor image's release: the container is `ubi9/ubi:9.8-<build>`, and
+   it registers first, runs `subscription-manager release --set=9.8` and disables
+   `ubi.repo` before installing podman. UBI's repos have no 9.8 path, only the moving `9`
+   stream: 9.9's podman needs a netavark that requires `aardvark-dns >= 3:1.17`, UBI had
+   only `2:1.17.1` (2026-11), and no podman would install. Locked, the layers' `dnf
+   install`s get 9.8 too, since podman hands builds the builder's repos; before, they
+   pulled 9.9 packages onto the 9.8 base. Move both pins with the vendor image. Images go to
    GHCR, then into the air-gapped registry by hand. Pattern from
    `redhat-et/edge-ai-image-pipelines` (Apache-2.0). The host's `/mnt` is mounted as
    `/scratch`, with `/var/lib/containers`, `/var/tmp` and the ISO output bound onto it — for

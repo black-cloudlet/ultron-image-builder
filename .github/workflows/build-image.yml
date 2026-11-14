@@ -50,7 +50,7 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     permissions: { contents: read, packages: write }
     container:
-      image: registry.access.redhat.com/ubi9/ubi
+      image: registry.access.redhat.com/ubi9/ubi:9.8-1794186345
       options: --privileged
       # The runner's ephemeral disk: ~10 GB of embedded images does not fit in
       # the job container's writable layer.
@@ -66,15 +66,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Container tools
-        run: dnf -y install podman jq
-
-      # UBI's default policy demands signatures for registry.redhat.io content.
-      - name: Relax image signature policy in the builder
-        run: |
-          jq 'del(.transports)' /etc/containers/policy.json > /tmp/policy.json
-          mv /tmp/policy.json /etc/containers/policy.json
-
       # Every job registers, including the layers that install no RPMs: the
       # variant layers need the RHEL and rhocp repos, and one code path for all
       # of them beats a per-layer flag.
@@ -83,6 +74,23 @@ jobs:
           RHSM_USERNAME: ${{ secrets.RHSM_USERNAME }}
           RHSM_PASSWORD: ${{ secrets.RHSM_PASSWORD }}
         run: subscription-manager register --username="$RHSM_USERNAME" --password="$RHSM_PASSWORD"
+
+      # Pinned to 9.8, the vendor image's release. UBI's repos follow the moving
+      # RHEL 9 stream (9.9 shipped podman with uninstallable deps), so dnf uses only
+      # the registered RHEL repos, locked to 9.8; podman hands the layers the same.
+      - name: Container tools
+        run: |
+          subscription-manager release --set=9.8
+          sed -i 's/^enabled *= *1/enabled = 0/' /etc/yum.repos.d/ubi.repo
+          ! grep -q '^enabled *= *1' /etc/yum.repos.d/ubi.repo \
+            || { echo "::error::UBI repos still enabled in /etc/yum.repos.d/ubi.repo"; exit 1; }
+          dnf -y install podman jq
+
+      # UBI's default policy demands signatures for registry.redhat.io content.
+      - name: Relax image signature policy in the builder
+        run: |
+          jq 'del(.transports)' /etc/containers/policy.json > /tmp/policy.json
+          mv /tmp/policy.json /etc/containers/policy.json
 
       # podman must end up on native overlay with the native diff, or every
       # layer commit walks the whole rootfs (~2 min each). The job container's

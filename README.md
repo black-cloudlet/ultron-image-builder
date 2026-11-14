@@ -450,9 +450,12 @@ Seven images come from the services layer today: cert-manager ×3, External Secr
 ### Where it runs
 
 GitHub has no RHEL runner, so each job runs on **`ubuntu-24.04-arm`** (native arm64; emulating
-arm64 is not viable) **inside a `registry.access.redhat.com/ubi9/ubi` container**. The container
-supplies RHEL's `podman`, and a `subscription-manager register` inside it
-supplies entitlement for the RHEL and OpenShift repos.
+arm64 is not viable) **inside a `registry.access.redhat.com/ubi9/ubi` container**, pinned to a 9.8 build. The
+container supplies RHEL's `podman`, and a `subscription-manager register` inside it supplies
+entitlement for the RHEL and OpenShift repos. Everything is installed from those repos locked
+to RHEL 9.8, the base image's release, with UBI's own repos off: they follow the newest RHEL 9
+and once shipped a podman that could not be installed. The layer builds get the same 9.8
+repos.
 
 The runner's `/mnt` disk is mounted as `/scratch`, and container storage, `/var/tmp` and the ISO
 output go there. That is for space (the embedded images run to gigabytes), and so podman can use
@@ -462,7 +465,7 @@ strips `metacopy` and fails unless `podman info` reports `Native Overlay Diff:tr
 
 ### One layer (`build-image.yml`)
 
-1. Install podman and jq in the UBI container and register with Red Hat.
+1. Register with Red Hat, lock the release to 9.8, and install podman and jq.
 2. Move container storage onto `/scratch`.
 3. Compute the tags (`latest` and `stable` only on `main`) and validate the `also-as` name
    *before* the build.
