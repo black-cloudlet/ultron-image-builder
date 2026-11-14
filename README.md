@@ -142,8 +142,8 @@ signed repository; it is the one NVIDIA package added here. The tag is pinned in
 `/etc/nv_tegra_release` (R36.5.x, to match the QSPI), the kmod and container-toolkit packages,
 that the vendor's CDI unit finds the toolkit and is enabled, `nvgpu.ko`, `skopeo`, `podman`, and
 `lvm2` (the root filesystem is on LVM and MicroShift's storage needs `vgs`). For `jtop` it checks
-the unit runs a binary that exists and is enabled, and that jtop's settings folder resolves to
-`/var/lib/jtop`.
+that `jtop.service` is enabled and its `ExecStart` binary exists, and that jtop's settings folder
+resolves to `/var/lib/jtop`.
 
 **`jtop`** (jetson-stats, pinned by `JTOP_VERSION`) is a Jetson monitoring tool, so it sits with
 the rest of the node's tooling here. `pip3 install --prefix=/usr --only-binary=:all:`: the

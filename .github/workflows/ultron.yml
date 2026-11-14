@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The pinned vendor image, republished. Shared by every variant.
+  # The pinned vendor image, plus field tools and jtop. Shared by every variant.
   base:
     uses: ./.github/workflows/build-image.yml
     with:

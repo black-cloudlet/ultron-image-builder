@@ -42,9 +42,8 @@ if ! command -v jtop; then
 	exit 1
 fi
 
-# jtop installs its own unit, unchanged from the template, when it finds none at
-# this path. The template's binary path was wrong once, and the unit then
-# restarted forever.
+# The wheel's template runs /usr/local/bin/jtop; jtop installs it as is when this
+# file is missing, and it never starts.
 unit=/etc/systemd/system/jtop.service
 if [[ ! -f $unit || -L $unit ]]; then
 	echo "not a regular file: $unit"
@@ -63,8 +62,8 @@ if [[ ! -L $wants/jtop.service ]]; then
 	exit 1
 fi
 
-# The service creates its settings folder under /usr, read-only on a node. Ask
-# jtop where it is, create /var as a boot would, and expect it to resolve there.
+# jtop's settings folder is /usr/local/jtop, linked to /var/lib/jtop. Create that
+# as tmpfiles would at boot, and check jtop's path resolves there.
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/jtop.conf
 cfg=$(python3 -c 'from jtop.core.config import get_config_service as g; print(g())')
 if [[ $(realpath -m "$cfg") != /var/lib/jtop || ! -d $cfg ]]; then

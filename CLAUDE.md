@@ -153,7 +153,7 @@ only. KServe was removed once before (`bba9d10`, reason unrecorded).
    `ultron-bootc-<name>` and the next builds on its **digest**. CI is two reusable
    workflows (`build-image.yml`, `build-iso.yml`) plus `ultron.yml`, chaining base →
    bound-images → kiosk → microshift → services → ISO. The build context is the repo root. Every
-   layer registers with subscription-manager, even the one that installs nothing: one code path.
+   layer registers with subscription-manager, even `services/`, which installs no RPMs: one code path.
 8. **NVIDIA BSP download stays manual** (documented in `README.md`). Scripting it was fragile.
 9. **Every version is a GitHub repository variable** (Settings → Secrets and variables →
    Actions → Variables), the only place it is set: `ultron.yml` passes each as a build arg,

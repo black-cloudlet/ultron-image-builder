@@ -77,8 +77,8 @@ jobs:
         run: |
           printf '%s\n' "$BUILD_ARGS" | awk -F= 'NF && $2 == "" { print "::error::build arg " $1 " is empty: set its repository variable"; bad = 1 } END { exit bad }'
 
-      # Every job registers, including the layers that install no RPMs: the
-      # variant layers need the RHEL and rhocp repos, and one code path for all
+      # Every job registers, even services, which installs no RPMs: the other
+      # layers need the RHEL, rhacm and rhocp repos, and one code path for all
       # of them beats a per-layer flag.
       - name: Register with Red Hat
         env:
