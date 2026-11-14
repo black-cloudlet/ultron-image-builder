@@ -2,8 +2,7 @@
 # builds on the previous one's digest, so a change to a service image does not
 # re-pull MicroShift's control plane and vice versa. The ISO is built from the
 # top of the chain, which is services, not microshift.
-#
-# Every version is a repository variable, passed as a build arg (CLAUDE.md 9).
+# Versions are repository variables (CLAUDE.md decision 9).
 name: ultron images + installer ISO
 
 on:
@@ -105,7 +104,7 @@ jobs:
     secrets: inherit
     permissions: { contents: read, packages: write }
 
-  # Installs ultron-bootc, not a layer name, by this run's digest.
+  # ultron-bootc, by this run's digest.
   iso:
     needs: services
     uses: ./.github/workflows/build-iso.yml

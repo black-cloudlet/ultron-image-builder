@@ -1,19 +1,16 @@
 # Layer 1, shared: the vendor image under a name we control, plus field tools.
-# Versions come from repository variables (ultron.yml); no defaults. BASE is a
-# full tag: the Tegra kmod is tied to its kernel. No dnf upgrade.
+# Versions are repository variables (ultron.yml). BASE is a full tag; no dnf upgrade.
 ARG BASE
 FROM ${BASE}
 
-# Lock every layer's dnf to the vendor image's release; unlocked, a build follows
-# the newest RHEL 9 minor.
+# Lock every layer's dnf to the vendor image's release.
 ARG RHEL_VERSION
 RUN . /etc/os-release && \
     if [ "$VERSION_ID" != "${RHEL_VERSION:?RHEL_VERSION is not set}" ]; then \
         echo "RHEL_VERSION is $RHEL_VERSION, the base image is RHEL $VERSION_ID"; exit 1; fi && \
     mkdir -p /etc/dnf/vars && echo "$RHEL_VERSION" > /etc/dnf/vars/releasever
 
-# The vendor dropped the toolkit (2026-09) but still enables nvidia-ctk.service,
-# which needs it. From NVIDIA's signed repo; the repo file is not kept.
+# nvidia-ctk.service needs the toolkit the vendor no longer ships.
 ARG NVCTK_VER
 RUN printf '%s\n' '[nvidia-container-toolkit]' 'name=nvidia-container-toolkit' \
         'baseurl=https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch' \

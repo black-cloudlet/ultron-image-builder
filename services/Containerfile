@@ -8,7 +8,7 @@ FROM ${BASE_IMAGE}
 COPY services/manifests/ /usr/lib/microshift/manifests.d/
 
 # Upstream installs, curl'd here and patched from the roots above, never forked.
-# Pinned, never a channel: the version variables are the only pin on the images too.
+# Pinned, never a channel; these versions also pin the images.
 ARG CERT_MANAGER_VER
 RUN curl -fsSL \
       -o /usr/lib/microshift/manifests.d/010-cert-manager/cert-manager.yaml \

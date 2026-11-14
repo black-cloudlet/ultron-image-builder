@@ -2,8 +2,7 @@
 # Checks run inside the republished vendor image. Fed on stdin:
 #   podman run --rm -i "$IMAGE:$TAG" bash -s < base/smoke-test.base.sh
 #
-# Mostly about the vendor image: a base bump that breaks one of these breaks the
-# GPU on every variant.
+# Mostly the vendor image: a base bump that breaks these breaks the GPU everywhere.
 set -euo pipefail
 
 bootc --version
@@ -14,8 +13,7 @@ grep -qE '^# R36 \(release\), REVISION: 5\.' /etc/nv_tegra_release \
 rpm -q "nvidia-jetpack-for-rhel-$(cat /etc/dnf/vars/releasever)-kmod" nvidia-container-toolkit-base
 ls /usr/lib/modules/*/extra/drivers/gpu/nvgpu/nvgpu.ko
 
-# Our toolkit, the vendor's unit: if they disagree the unit skips silently and
-# no CDI spec is written.
+# Without our toolkit the vendor's CDI unit skips silently.
 cond=$(sed -n 's/^ConditionPathExists=//p' /usr/lib/systemd/system/nvidia-ctk.service)
 [ -x "$cond" ] || { echo "nvidia-ctk.service runs only if '$cond' exists, and it does not"; exit 1; }
 wants=/etc/systemd/system/multi-user.target.wants

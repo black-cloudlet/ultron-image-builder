@@ -58,7 +58,7 @@ jobs:
           RHSM_PASSWORD: ${{ secrets.RHSM_PASSWORD }}
         run: subscription-manager register --username="$RHSM_USERNAME" --password="$RHSM_PASSWORD"
 
-      # RHEL repos only: UBI's once shipped a podman it could not install.
+      # RHEL's repos, not UBI's (CLAUDE.md decision 6).
       - name: Container tools
         run: |
           sed -i 's/^enabled *= *1/enabled = 0/' /etc/yum.repos.d/ubi.repo
