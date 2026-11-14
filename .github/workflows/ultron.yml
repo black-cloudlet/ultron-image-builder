@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - base/**
+      - bound-images/**
       - kiosk/**
       - microshift/**
       - services/**
@@ -25,8 +26,8 @@ jobs:
     uses: ./.github/workflows/build-image.yml
     with:
       name: base
-      containerfile: base/Containerfile.base
-      smoke-test: base/smoke-test.base.sh
+      containerfile: base/Containerfile
+      smoke-test: base/smoke-test.sh
       build-args: |
         BASE=${{ vars.JETPACK_IMAGE }}
         RHEL_VERSION=${{ vars.RHEL_VERSION }}
@@ -44,8 +45,8 @@ jobs:
     uses: ./.github/workflows/build-image.yml
     with:
       name: bound-images
-      containerfile: base/Containerfile.podman
-      smoke-test: base/smoke-test.podman.sh
+      containerfile: bound-images/Containerfile
+      smoke-test: bound-images/smoke-test.sh
       build-args: |
         BASE_IMAGE=${{ needs.base.outputs.image-ref }}
         RHEL_VERSION=${{ vars.RHEL_VERSION }}

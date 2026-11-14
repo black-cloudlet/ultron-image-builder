@@ -6,14 +6,14 @@ FROM ${BASE_IMAGE}
 # From redhat-et/edge-ai-image-pipelines (Apache-2.0). The cache is a plain
 # directory, not an additional store: images pulled later would reuse its
 # layers, and an upgrade that drops one breaks them (RHEL-75827).
-COPY --chmod=0555 base/physically-bound-images/embed_image.sh \
+COPY --chmod=0555 bound-images/embed_image.sh \
       /opt/physically-bound-images/embed_image.sh
-COPY --chmod=0555 base/physically-bound-images/copy_embedded_images.sh \
+COPY --chmod=0555 bound-images/copy_embedded_images.sh \
       /opt/physically-bound-images/copy_embedded_images.sh
 
 # Replays the cache into containers-storage once per boot. No network-online:
 # the copy is local-disk only.
-COPY --chmod=0644 base/physically-bound-images/copy-embedded-images.service \
+COPY --chmod=0644 bound-images/copy-embedded-images.service \
       /usr/lib/systemd/system/copy-embedded-images.service
 RUN systemctl enable copy-embedded-images.service
 
