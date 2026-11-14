@@ -2,6 +2,8 @@
 # builds on the previous one's digest, so a change to a service image does not
 # re-pull MicroShift's control plane and vice versa. The ISO is built from the
 # top of the chain, which is services, not microshift.
+#
+# Every version is a repository variable, passed as a build arg (CLAUDE.md 9).
 name: ultron images + installer ISO
 
 on:
@@ -26,6 +28,10 @@ jobs:
       name: base
       containerfile: base/Containerfile.base
       smoke-test: base/smoke-test.base.sh
+      build-args: |
+        BASE=${{ vars.JETPACK_IMAGE }}
+        RHEL_VERSION=${{ vars.RHEL_VERSION }}
+        NVCTK_VER=${{ vars.NVIDIA_CTK_VERSION }}
     secrets: inherit
     permissions: { contents: read, packages: write }
 
@@ -40,7 +46,11 @@ jobs:
       name: bound-images
       containerfile: base/Containerfile.podman
       smoke-test: base/smoke-test.podman.sh
-      build-args: BASE_IMAGE=${{ needs.base.outputs.image-ref }}
+      build-args: |
+        BASE_IMAGE=${{ needs.base.outputs.image-ref }}
+        RHEL_VERSION=${{ vars.RHEL_VERSION }}
+        JTOP_VER=${{ vars.JTOP_VERSION }}
+        ACM_VER=${{ vars.ACM_VERSION }}
     secrets: inherit
     permissions: { contents: read, packages: write }
 
@@ -64,7 +74,11 @@ jobs:
       name: microshift
       containerfile: microshift/Containerfile
       smoke-test: microshift/smoke-test.sh
-      build-args: BASE_IMAGE=${{ needs.kiosk.outputs.image-ref }}
+      build-args: |
+        BASE_IMAGE=${{ needs.kiosk.outputs.image-ref }}
+        RHEL_VERSION=${{ vars.RHEL_VERSION }}
+        USHIFT_VER=${{ vars.MICROSHIFT_VERSION }}
+        NVIDIA_DEVICE_PLUGIN_VER=${{ vars.NVIDIA_DEVICE_PLUGIN_VERSION }}
     secrets: inherit
     permissions: { contents: read, packages: write }
 
@@ -78,7 +92,11 @@ jobs:
       name: services
       containerfile: services/Containerfile
       smoke-test: services/smoke-test.sh
-      build-args: BASE_IMAGE=${{ needs.microshift.outputs.image-ref }}
+      build-args: |
+        BASE_IMAGE=${{ needs.microshift.outputs.image-ref }}
+        CERT_MANAGER_VER=${{ vars.CERT_MANAGER_VERSION }}
+        EXTERNAL_SECRETS_VER=${{ vars.EXTERNAL_SECRETS_VERSION }}
+        KSERVE_VER=${{ vars.KSERVE_VERSION }}
       # The image a node actually boots and upgrades, so it is also published
       # under the project's name without a layer suffix.
       also-as: ultron-bootc
@@ -87,14 +105,14 @@ jobs:
     secrets: inherit
     permissions: { contents: read, packages: write }
 
-  # The installer config is project-wide; the image installed is the top of the
-  # chain.
+  # Installs ultron-bootc, not a layer name, by this run's digest.
   iso:
     needs: services
     uses: ./.github/workflows/build-iso.yml
     with:
-      image-ref: ${{ needs.services.outputs.image-ref }}
+      image-ref: ${{ needs.services.outputs.also-image-ref }}
       config: config.toml
       tag: ${{ needs.services.outputs.tag }}
+      rhel-version: ${{ vars.RHEL_VERSION }}
     secrets: inherit
     permissions: { contents: read, packages: read }

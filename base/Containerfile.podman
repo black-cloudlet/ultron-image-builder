@@ -5,10 +5,10 @@ FROM ${BASE_IMAGE}
 
 # --prefix=/usr: /usr/local is machine state on bootc and would not survive.
 # --only-binary: the sdist's setup.py would install the unit and group itself.
-ARG JTOP_VER=7.2.1
+ARG JTOP_VER
 RUN dnf install -y python3 python3-pip && \
     pip3 install --prefix=/usr --no-cache-dir --only-binary=:all: \
-        "jetson-stats==${JTOP_VER}" && \
+        "jetson-stats==${JTOP_VER:?JTOP_VER is not set}" && \
     dnf clean all
 
 # The group jetson-stats grants jtop access through.
@@ -39,9 +39,11 @@ COPY --chmod=0644 base/physically-bound-images/copy-embedded-images.service \
 RUN systemctl enable copy-embedded-images.service
 
 # Edge Manager agent from ACM; ACM_VER matches the hub. No weak deps.
-ARG ACM_VER=2.15
-RUN dnf install -y --setopt=install_weak_deps=False \
-        --enablerepo="rhacm-${ACM_VER}-for-rhel-9-$(uname -m)-rpms" \
+ARG ACM_VER
+ARG RHEL_VERSION
+RUN : "${RHEL_VERSION:?RHEL_VERSION is not set}" && \
+    dnf install -y --setopt=install_weak_deps=False \
+        --enablerepo="rhacm-${ACM_VER:?ACM_VER is not set}-for-rhel-${RHEL_VERSION%%.*}-$(uname -m)-rpms" \
         flightctl-agent && \
     systemctl enable flightctl-agent.service && \
     dnf clean all

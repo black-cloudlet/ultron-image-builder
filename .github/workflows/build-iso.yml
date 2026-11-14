@@ -19,6 +19,10 @@ on:
       tag:
         type: string
         required: true
+      rhel-version:
+        description: the images' RHEL release (repository variable RHEL_VERSION)
+        type: string
+        required: true
       runs-on:
         type: string
         default: ubuntu-24.04-arm
@@ -37,23 +41,30 @@ jobs:
     env:
       ISO_NAME: ultron-${{ inputs.tag }}.iso
       SMDEV_CONTAINER_OFF: 1
+      RHEL_VERSION: ${{ inputs.rhel-version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Container tools
-        run: dnf -y install podman jq
-
-      # UBI's default policy demands signatures for registry.redhat.io content.
-      - name: Relax image signature policy in the builder
+      - name: Check RHEL version
         run: |
-          jq 'del(.transports)' /etc/containers/policy.json > /tmp/policy.json
-          mv /tmp/policy.json /etc/containers/policy.json
+          case $RHEL_VERSION in
+            [0-9]*.[0-9]*) ;;
+            *) echo "::error::rhel-version is '$RHEL_VERSION': set the RHEL_VERSION repository variable"; exit 1 ;;
+          esac
 
       - name: Register with Red Hat
         env:
           RHSM_USERNAME: ${{ secrets.RHSM_USERNAME }}
           RHSM_PASSWORD: ${{ secrets.RHSM_PASSWORD }}
         run: subscription-manager register --username="$RHSM_USERNAME" --password="$RHSM_PASSWORD"
+
+      # RHEL repos only: UBI's once shipped a podman it could not install.
+      - name: Container tools
+        run: |
+          sed -i 's/^enabled *= *1/enabled = 0/' /etc/yum.repos.d/ubi.repo
+          ! grep -q '^enabled *= *1' /etc/yum.repos.d/ubi.repo \
+            || { echo "::error::UBI repos still enabled in /etc/yum.repos.d/ubi.repo"; exit 1; }
+          dnf -y install podman jq
 
       # Same as build-image.yml; the ISO output goes there too for space.
       - name: Put container storage and ISO output on the runner's disk
@@ -129,7 +140,7 @@ jobs:
           install -m 600 /dev/null /tmp/ks.cfg
           python3.12 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["customizations"]["installer"]["kickstart"]["contents"])' \
             /tmp/config.toml > /tmp/ks.cfg
-          ksvalidator -v RHEL9 /tmp/ks.cfg \
+          ksvalidator -v "RHEL${RHEL_VERSION%%.*}" /tmp/ks.cfg \
             || { echo "::error::the kickstart in ${{ inputs.config }} does not parse; anaconda would stop before its UI"; exit 1; }
 
       - name: Build ISO
@@ -141,7 +152,7 @@ jobs:
             -v /tmp/config.toml:/config.toml:ro \
             -v ./output:/output \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
-            registry.redhat.io/rhel9/bootc-image-builder:latest \
+            "registry.redhat.io/rhel${RHEL_VERSION%%.*}/bootc-image-builder:latest" \
             --type anaconda-iso --config /config.toml "${{ inputs.image-ref }}"
 
       # bib ignores menu-timeout for anaconda-iso (osbuild/images honours it for

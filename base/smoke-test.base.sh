@@ -2,8 +2,8 @@
 # Checks run inside the republished vendor image. Fed on stdin:
 #   podman run --rm -i "$IMAGE:$TAG" bash -s < base/smoke-test.base.sh
 #
-# The layer adds only field tools, so this is really about the vendor image: a
-# base bump that breaks one of these breaks the GPU on every variant.
+# Mostly about the vendor image: a base bump that breaks one of these breaks the
+# GPU on every variant.
 set -euo pipefail
 
 bootc --version
@@ -11,8 +11,17 @@ cat /etc/nv_tegra_release
 # Must match the QSPI's R36.5.x BSP, or the node hangs at boot.
 grep -qE '^# R36 \(release\), REVISION: 5\.' /etc/nv_tegra_release \
 	|| { echo "/etc/nv_tegra_release is not R36 REVISION 5.x: the QSPI BSP no longer matches"; exit 1; }
-rpm -q nvidia-jetpack-for-rhel-9.8-kmod nvidia-container-toolkit-base
+rpm -q "nvidia-jetpack-for-rhel-$(cat /etc/dnf/vars/releasever)-kmod" nvidia-container-toolkit-base
 ls /usr/lib/modules/*/extra/drivers/gpu/nvgpu/nvgpu.ko
+
+# Our toolkit, the vendor's unit: if they disagree the unit skips silently and
+# no CDI spec is written.
+cond=$(sed -n 's/^ConditionPathExists=//p' /usr/lib/systemd/system/nvidia-ctk.service)
+[ -x "$cond" ] || { echo "nvidia-ctk.service runs only if '$cond' exists, and it does not"; exit 1; }
+wants=/etc/systemd/system/multi-user.target.wants
+for u in nvidia-ctk.service nvidia-cdi-refresh.path nvidia-cdi-refresh.service; do
+	[ -e "$wants/$u" ] || { echo "$u is not enabled; $wants has:"; ls "$wants"; exit 1; }
+done
 
 # skopeo is used by embed_image.sh at build time and by copy_embedded_images.sh
 # at boot; podman by the latter, to drop a superseded image set. Both come from

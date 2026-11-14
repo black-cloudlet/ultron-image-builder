@@ -42,6 +42,9 @@ on:
       image-ref:
         description: pushed image pinned by digest
         value: ${{ jobs.build.outputs.image-ref }}
+      also-image-ref:
+        description: the also-as name pinned by its own digest; empty without also-as
+        value: ${{ jobs.build.outputs.also-image-ref }}
       tag:
         value: ${{ jobs.build.outputs.tag }}
 
@@ -62,18 +65,17 @@ jobs:
       SMDEV_CONTAINER_OFF: 1
     outputs:
       image-ref: ${{ steps.push.outputs.image-ref }}
+      also-image-ref: ${{ steps.push.outputs.also-image-ref }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Container tools
-        run: dnf -y install podman jq
-
-      # UBI's default policy demands signatures for registry.redhat.io content.
-      - name: Relax image signature policy in the builder
+      # KEY= is an unset repository variable.
+      - name: Check build args
+        env:
+          BUILD_ARGS: ${{ inputs.build-args }}
         run: |
-          jq 'del(.transports)' /etc/containers/policy.json > /tmp/policy.json
-          mv /tmp/policy.json /etc/containers/policy.json
+          printf '%s\n' "$BUILD_ARGS" | awk -F= 'NF && $2 == "" { print "::error::build arg " $1 " is empty: set its repository variable"; bad = 1 } END { exit bad }'
 
       # Every job registers, including the layers that install no RPMs: the
       # variant layers need the RHEL and rhocp repos, and one code path for all
@@ -83,6 +85,14 @@ jobs:
           RHSM_USERNAME: ${{ secrets.RHSM_USERNAME }}
           RHSM_PASSWORD: ${{ secrets.RHSM_PASSWORD }}
         run: subscription-manager register --username="$RHSM_USERNAME" --password="$RHSM_PASSWORD"
+
+      # RHEL repos only: UBI's once shipped a podman it could not install.
+      - name: Container tools
+        run: |
+          sed -i 's/^enabled *= *1/enabled = 0/' /etc/yum.repos.d/ubi.repo
+          ! grep -q '^enabled *= *1' /etc/yum.repos.d/ubi.repo \
+            || { echo "::error::UBI repos still enabled in /etc/yum.repos.d/ubi.repo"; exit 1; }
+          dnf -y install podman jq
 
       # podman must end up on native overlay with the native diff, or every
       # layer commit walks the whole rootfs (~2 min each). The job container's
@@ -213,7 +223,7 @@ jobs:
       # same manifest, so the digest is taken from the first push and the rest
       # only move a name onto it. The second name gets the same layers, already
       # compressed, so its manifest should be byte-identical; a different digest
-      # is reported, not fatal, since nothing downstream builds on that name.
+      # is reported, not fatal: the ISO installs that name's own.
       - name: Push
         id: push
         env:
@@ -235,6 +245,7 @@ jobs:
             [ "$(cat /tmp/also-digest)" = "$(cat /tmp/digest)" ] \
               || echo "::warning::$also has digest $(cat /tmp/also-digest), $IMAGE has $(cat /tmp/digest)"
             echo "::notice title=also published as::$also@$(cat /tmp/also-digest)"
+            echo "also-image-ref=${also}@$(cat /tmp/also-digest)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Unregister
