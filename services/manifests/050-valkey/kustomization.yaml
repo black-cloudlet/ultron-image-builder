@@ -1,0 +1,24 @@
+# Sorts after everything it needs: 010 and 015 for its Certificate (cert-manager's
+# CRDs, the device-ca ClusterIssuer) and 020 for its passwords (ESO's CRDs and
+# controller). The pod waits for the certificate's and the passwords' Secrets.
+# Access control is users.acl: see the smoke test's valkey section.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: valkey
+
+resources:
+  - namespace.yaml
+  - certificate.yaml
+  - passwords.yaml
+  - distribute.yaml
+  - valkey.yaml
+
+# The suffix rolls the pod when any of these change. Holds no secret: users.acl
+# is the template, its placeholders filled at pod start by render-acl.sh.
+configMapGenerator:
+  - name: valkey-config
+    files:
+      - valkey.conf
+      - users.acl
+      - render-acl.sh

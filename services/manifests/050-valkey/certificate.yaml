@@ -1,0 +1,25 @@
+# Valkey's server certificate, from the node's own CA (015). The Secret also
+# carries ca.crt, which valkey.conf needs although clients send no certificate.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: valkey
+spec:
+  secretName: valkey-tls
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: device-ca
+  dnsNames:
+    - valkey
+    - valkey.valkey
+    - valkey.valkey.svc
+    - valkey.valkey.svc.cluster.local
+    - valkey-headless.valkey.svc.cluster.local
+    - valkey-0.valkey-headless.valkey.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - digital signature
+    - server auth

@@ -72,6 +72,7 @@ expect_workloads 020-external-secrets \
 Deployment/external-secrets-cert-controller
 Deployment/external-secrets-webhook"
 expect_workloads 030-kserve "Deployment/kserve-controller-manager"
+expect_workloads 050-valkey "StatefulSet/valkey"
 
 eso=$render/020-external-secrets.json
 
@@ -156,6 +157,178 @@ echo "   storageInitializer image: $si_image"
 csc=$(jq -r '.[] | select(.kind == "ClusterStorageContainer") | .metadata.name' "$ksv")
 [[ -z $csc ]] || fail "the kserve render carries a ClusterStorageContainer:" $csc
 echo "   no ClusterStorageContainer"
+
+echo "== valkey =="
+# Valkey ships with a passwordless default user, and the pod is reachable from
+# every other pod. users.acl is a template: the init container writes it with
+# the SHA-256s of passwords ESO generates on the node. Checked here because a
+# wrong ACL, password or TLS wiring does not fail the build: the pod crash-loops
+# or waits on a node nobody can ssh into, or, worse, starts open, or a password
+# reaches a namespace it should not. Every failure lists the root.
+vk=/usr/lib/microshift/manifests.d/050-valkey
+acl=$vk/users.acl
+conf=$vk/valkey.conf
+vr=$render/050-valkey.json
+vfail() { fail "$@" "-- $vk:" "$(ls -la "$vk" 2>&1)"; }
+[[ -s $acl ]] || vfail "missing or empty: $acl"
+# Valkey trims each line and reads every one as a user, so a line the greps
+# below cannot see (leading blanks, say) would still be a user.
+odd=$(grep -v '^user [^ ]' "$acl" | grep -v '^$' || true)
+[[ -z $odd ]] || vfail "$acl has lines that do not start with 'user <name>':" "$odd"
+# Valkey makes the default user itself when the file does not mention it, and
+# that one is on, nopass and allowed everything: an unauthenticated write works.
+grep -qx 'user default off -@all' "$acl" \
+	|| vfail "$acl has no 'user default off -@all' line; without it Valkey keeps its" \
+		"built-in default user, which needs no password and can run anything"
+echo "   default user: off"
+# The probe user exists so the pod can be checked with the default user off.
+# The whole line, not its tokens: ACL aliases (allcommands, allkeys), %RW~ key
+# patterns and (...) selectors would all grant more than PING.
+grep -qx 'user probe on nopass -@all +ping' "$acl" \
+	|| vfail "the probe user must read exactly 'user probe on nopass -@all +ping'," \
+		"which the readiness and liveness probes log in as; it reads:" \
+		"$(grep '^user probe ' "$acl" || echo nothing)"
+nopass=$(grep -E '(^| )nopass( |$)' "$acl" | grep -v '^user probe ' || true)
+[[ -z $nopass ]] || vfail "a user other than probe has no password:" "$nopass"
+echo "   probe user: PING only"
+# Token by token: a > token is a plaintext password, in git and in every
+# registry; a # token other than the user's own placeholder is a hash that
+# belongs on the node, or another user's password. read -a, not a for over
+# $rules, which would glob ~* and &*.
+users=()
+while read -r _ name rules; do
+	[[ $name == default || $name == probe ]] && continue
+	ph="#@VALKEY_${name^^}_PASSWORD_SHA256@"
+	read -ra toks <<<"$rules"
+	own=0
+	for t in "${toks[@]}"; do
+		case $t in
+		'>'*) vfail "valkey user $name in $acl has a plaintext > password; it takes $ph only" ;;
+		"$ph") own=1 ;;
+		'#'*) vfail "valkey user $name in $acl has the hash or placeholder '$t'; it takes $ph only" ;;
+		esac
+	done
+	(( own == 1 )) || vfail "valkey user $name in $acl has no $ph password"
+	users+=("$name")
+done < <(grep '^user ' "$acl")
+for want in root app; do
+	[[ " ${users[*]} " == *" $want "* ]] || vfail "$acl has no $want user"
+done
+echo "   users ${users[*]}: password placeholders"
+# The conf and the pod spec are separate files that have to agree. Valkey
+# refuses to start with user lines in the conf next to an aclfile.
+conf_val() { awk -v k="$1" '$1 == k { print $2 }' "$conf"; }
+aclpath=$(conf_val aclfile)
+acldir=$(dirname "$aclpath")
+[[ $aclpath == */users.acl ]] \
+	|| vfail "valkey.conf must say aclfile <dir>/users.acl, got: ${aclpath:-nothing}"
+! grep -Eq '^user ' "$conf" || vfail "valkey.conf has user lines next to an aclfile; Valkey refuses to start"
+! grep -Eq '^protected-mode[[:space:]]+no' "$conf" \
+	|| vfail "valkey.conf turns protected-mode off, which is the net under the ACL"
+# TLS only: a plaintext port would carry every password in the clear.
+[[ $(conf_val port) == 0 && -n $(conf_val tls-port) ]] \
+	|| vfail "valkey.conf must say port 0 and a tls-port, got port '$(conf_val port)'" \
+		"tls-port '$(conf_val tls-port)'"
+tlsdir=$(dirname "$(conf_val tls-cert-file)")
+for k in tls-cert-file tls-key-file tls-ca-cert-file; do
+	[[ $(conf_val $k) == "$tlsdir"/* ]] \
+		|| vfail "valkey.conf's $k '$(conf_val $k)' is not in $tlsdir with tls-cert-file"
+done
+# cert-manager renews the certificate in place; without a reload interval
+# Valkey serves the old one until it expires.
+[[ $(conf_val tls-auto-reload-interval) =~ ^[1-9][0-9]*$ ]] \
+	|| vfail "valkey.conf has no tls-auto-reload-interval above 0"
+echo "   TLS only, files in $tlsdir, reloaded"
+# Mounts, by volume: what the pod spec says is mounted at a directory, in the
+# main container (c) or the init container (i).
+vol_at() {
+	jq -c --arg which "$1" --arg d "$2" "$W"' workloads | podspec | . as $s
+		| (if $which == "i" then .initContainers // [] else .containers end)[]
+		| .volumeMounts[]? | select(.mountPath == $d) | . as $m
+		| $s.volumes[] | select(.name == $m.name) | . + {readOnly: ($m.readOnly == true)}' "$vr"
+}
+# The ACL is written by the init container into memory, and read there.
+[[ $(vol_at c "$acldir" | jq -r '.emptyDir.medium // empty') == Memory ]] \
+	|| vfail "Valkey does not read $aclpath from a memory emptyDir:" "$(vol_at c "$acldir")"
+[[ $(vol_at i "$acldir" | jq -r 'select(.readOnly | not) | .emptyDir.medium // empty') == Memory ]] \
+	|| vfail "no init container writes the memory emptyDir at $acldir"
+init=$(jq -r "$W"' workloads | podspec | .initContainers[]? | .command | join(" ")' "$vr")
+[[ $init == *render-acl.sh* ]] || vfail "the init container does not run render-acl.sh:" "$init"
+script=$vk/render-acl.sh
+sh -n "$script" || vfail "$script does not parse"
+# Each placeholder user's password: a file named after it in the init
+# container (render-acl.sh fills one placeholder per file), from a Secret an
+# ExternalSecret generates once, from a Password generator, here in the render.
+pwdir=$(jq -r "$W"' workloads | podspec | . as $s | .initContainers[]? | .volumeMounts[]?
+	| . as $m | select(any($s.volumes[]; .name == $m.name and .projected != null))
+	| .mountPath' "$vr")
+[[ $(wc -w <<<"$pwdir") == 1 ]] || vfail "the init container must mount one projected volume of passwords, got: ${pwdir:-none}"
+paths=$(vol_at i "$pwdir" | jq -r '.projected.sources[]?.secret.items[]?.path' | sort | tr '\n' ' ')
+[[ $paths == "$(printf '%s\n' "${users[@]}" | sort | tr '\n' ' ')" ]] \
+	|| vfail "the password files in $pwdir ($paths) are not the template's users (${users[*]})"
+for u in "${users[@]}"; do
+	sec=$(vol_at i "$pwdir" | jq -r --arg u "$u" '.projected.sources[]?.secret
+		| select(.items[]?.path == $u) | .name')
+	[[ -n $sec ]] || vfail "no Secret is projected as $pwdir/$u for the init container"
+	es=$(jq -c --arg n "$sec" '.[] | select(.kind == "ExternalSecret" and .spec.target.name == $n)' "$vr")
+	[[ $(jq -r .spec.refreshPolicy <<<"$es") == CreatedOnce ]] \
+		|| vfail "Secret $sec is not from an ExternalSecret with refreshPolicy CreatedOnce" \
+			"(anything else regenerates the password):" "${es:-none}"
+	# Owner would cascade-delete the password with its ExternalSecret, and a
+	# renamed one in a later image would generate a new password.
+	[[ $(jq -r .spec.target.creationPolicy <<<"$es") == Orphan ]] \
+		|| vfail "ExternalSecret for $sec must say creationPolicy: Orphan:" "$es"
+	gen=$(jq -r '.spec.dataFrom[0].sourceRef.generatorRef | "\(.kind)/\(.name)"' <<<"$es")
+	g=$(jq -c --arg n "${gen#*/}" '.[] | select(.kind == "Password" and .metadata.name == $n)' "$vr")
+	[[ $gen == Password/* && -n $g ]] || vfail "Secret $sec is not generated by a Password generator in the render: $gen"
+	# Without repeats a 64-character password asks for 16 distinct digits, and
+	# the generator fails: the Secret never appears and the pod never starts.
+	[[ $(jq -r '.spec.length // 24' <<<"$g") -ge 32 && $(jq -r .spec.allowRepeat <<<"$g") == true ]] \
+		|| vfail "Password generator $gen needs length >= 32 and allowRepeat: true:" "$g"
+	echo "   $u: Secret $sec, generated once by $gen"
+done
+# Distribution: app's password only, into labelled namespaces only. A Role that
+# reaches root's Secret, or every Secret, would let a client read root.
+rootsec=$(vol_at i "$pwdir" | jq -r '.projected.sources[]?.secret | select(.items[]?.path == "root") | .name')
+wide=$(jq -r --arg r "$rootsec" '.[] | select(.kind == "Role" or .kind == "ClusterRole")
+	| .metadata.name as $n | .rules[]? | select(any(.resources[]?; . == "secrets" or . == "*"))
+	| select((.resourceNames // []) == [] or any(.resourceNames[]; . == $r)) | $n' "$vr")
+[[ -z $wide ]] || vfail "these Roles reach root's Secret $rootsec or every Secret:" $wide
+# That check sees only roles in the render: a binding to one outside it (admin,
+# edit, any ClusterRole on the node) could read every Secret here unseen.
+outside=$(jq -r '[.[] | select(.kind == "Role" or .kind == "ClusterRole")
+	| "\(.kind)/\(.metadata.name)"] as $have | .[]
+	| select(.kind == "RoleBinding" or .kind == "ClusterRoleBinding")
+	| select("\(.roleRef.kind)/\(.roleRef.name)" as $r | $have | index($r) | not)
+	| "\(.kind)/\(.metadata.name) -> \(.roleRef.kind)/\(.roleRef.name)"' "$vr")
+[[ -z $outside ]] || vfail "these bindings name a role outside the render, whose rules this check cannot see:" "$outside"
+while read -r ces; do
+	store=$(jq -r '.spec.externalSecretSpec.secretStoreRef | "\(.kind)/\(.name)"' <<<"$ces")
+	sel=$(jq -c '.spec.namespaceSelectors' <<<"$ces")
+	cond=$(jq -c --arg n "${store#*/}" '[.[] | select(.kind == "ClusterSecretStore" and .metadata.name == $n)
+		| .spec.conditions[]?.namespaceSelector]' "$vr")
+	[[ $sel != '[{}]' && $sel != null && $sel == "$cond" ]] \
+		|| vfail "ClusterExternalSecret $(jq -r .metadata.name <<<"$ces") selects namespaces $sel," \
+			"but its store $store is limited to $cond: any namespace could name the store"
+	echo "   $(jq -r .metadata.name <<<"$ces"): to namespaces $sel only, its store limited alike"
+done < <(jq -c '.[] | select(.kind == "ClusterExternalSecret")' "$vr")
+tlssec=$(vol_at c "$tlsdir" | jq -r '.secret.secretName // empty')
+[[ -n $tlssec ]] || vfail "no Secret volume is mounted at $tlsdir, where valkey.conf looks for its certificate"
+issuer=$(jq -r --arg n "$tlssec" '.[] | select(.kind == "Certificate" and .spec.secretName == $n)
+	| "\(.spec.issuerRef.kind)/\(.spec.issuerRef.name)"' "$vr")
+[[ $issuer == ClusterIssuer/device-ca ]] \
+	|| vfail "Secret $tlssec, mounted at $tlsdir, is not from a Certificate issued by ClusterIssuer/device-ca:" "${issuer:-no Certificate}"
+missing=$(jq -r --arg n "$tlssec" '(.[] | select(.kind == "Certificate" and .spec.secretName == $n)
+	| .spec.dnsNames) as $d | .[] | select(.kind == "Service")
+	| "\(.metadata.name).\(.metadata.namespace).svc.cluster.local"
+	| select(. as $f | $d | index($f) | not)' "$vr")
+[[ -z $missing ]] || vfail "the valkey Certificate does not name:" $missing
+echo "   certificate: Secret $tlssec from ClusterIssuer/device-ca, every Service named"
+# A StatefulSet's pod name resolves only through a headless governing Service.
+headless=$(jq -r "$W"' (workloads | .spec.serviceName) as $n
+	| .[] | select(.kind == "Service" and .metadata.name == $n) | .spec.clusterIP' "$vr")
+[[ $headless == None ]] || vfail "the StatefulSet's serviceName is not a headless Service in the render"
+echo "   headless governing Service"
 
 echo "== restricted-v2 =="
 # Every pod template and serving runtime container, checked for what the SCC
