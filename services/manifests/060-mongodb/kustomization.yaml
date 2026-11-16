@@ -1,0 +1,21 @@
+# Percona Server for MongoDB, one standalone mongod: no operator, no replica
+# set. Sorts after 020 for its passwords (ESO's CRDs and controller); the pod
+# waits for their Secrets. Access control is the root and app users: see the
+# smoke test's mongodb section.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mongodb
+
+resources:
+  - namespace.yaml
+  - passwords.yaml
+  - distribute.yaml
+  - mongodb.yaml
+
+# The suffix rolls the pod when the script changes. Holds no secret: it reads
+# app's password from the mounted file.
+configMapGenerator:
+  - name: mongodb-initdb
+    files:
+      - create-app-user.js
