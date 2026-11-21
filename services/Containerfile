@@ -36,4 +36,13 @@ RUN --mount=type=secret,id=pullsecret,dst=/run/secrets/pull-secret.json \
             --authfile /run/secrets/pull-secret.json || exit 1 ; \
     done
 
+# PROOF, branch ais-whiteout-proof, not for main: can an image store under
+# /usr keep its images' deletions from this build to a container on the node?
+# One 30 kB test image, its deletions in ostree's `.ostree-wh.` form. Nothing
+# on the node uses the store (no storage.conf names it) until
+# bound-images/ais/check_store.sh does. bound-images/ais/README.md has the why.
+RUN --mount=type=bind,src=bound-images/ais,dst=/ais \
+    --mount=type=cache,id=ais-proof-staging,dst=/var/tmp/ais-staging \
+    /ais/build_proof_store.sh /var/tmp/ais-staging /usr/lib/containers/storage-proof
+
 RUN bootc container lint

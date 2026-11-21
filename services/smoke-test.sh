@@ -502,4 +502,24 @@ done < "$cache/mapping.txt"
 	"(${pins[*]}), so kubelet may delete them: ${unpinned[*]}"
 echo "   pinned: ${pins[*]}"
 
+echo "== proof store (branch ais-whiteout-proof) =="
+# Run after the rechunk, which rewrites every layer: the markers must reach the
+# push as plain files, with nothing left that a layer tar or an unpacker would
+# read as a deletion. The list is build_proof_store.sh's, which checked it
+# before the rechunk.
+proof=/usr/lib/containers/storage-proof
+[[ -d $proof/overlay ]] || fail "missing: $proof/overlay"
+expected='data/.ostree-wh.gone
+data/.ostree-wh.gonedir
+data/dir/.ostree-wh.old
+data/dir/sub/.ostree-wh.x'
+got=$(find "$proof/overlay" -path '*/diff/*' -name '.ostree-wh.*' | sed 's|.*/diff/||' | sort)
+[[ $got == "$expected" ]] || fail "$proof: expected markers:" "$expected" "found:" "$got"
+left=$(find "$proof/overlay" -path '*/diff/*' \( -type c -o -name '.wh.*' \))
+[[ -z $left ]] || fail "$proof: deletions not in ostree's form:" "$left"
+jq -e 'any(.[]; .names | index("localhost/ais-proof:1"))' \
+	"$proof/overlay-images/images.json" >/dev/null ||
+	fail "$proof: localhost/ais-proof:1 not in overlay-images/images.json"
+echo "   4 markers, the image recorded"
+
 echo "all checks passed"
