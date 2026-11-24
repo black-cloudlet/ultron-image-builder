@@ -1,0 +1,25 @@
+# PostgreSQL's server certificate, from the node's own CA (015). tls-reload.sh
+# has the server reread it after cert-manager renews it in place.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: postgresql
+spec:
+  secretName: postgresql-tls
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: device-ca
+  dnsNames:
+    - postgresql
+    - postgresql.postgresql
+    - postgresql.postgresql.svc
+    - postgresql.postgresql.svc.cluster.local
+    - postgresql-headless.postgresql.svc.cluster.local
+    - postgresql-0.postgresql-headless.postgresql.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - digital signature
+    - server auth

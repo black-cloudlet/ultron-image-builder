@@ -735,7 +735,7 @@ sudo podman run --rm --privileged --pull=newer --security-opt label=type:unconfi
 
 ## Extending it
 
-**A service on the cluster** (PostgreSQL, RabbitMQ, a model): add a numbered directory under
+**A service on the cluster** (RabbitMQ, a model): add a numbered directory under
 `services/manifests/` with a `kustomization.yaml`. The build embeds whatever images it renders.
 Give every container requests and limits at the house ratios, keep it admissible under
 `restricted-v2`, and add its workloads to the smoke test's expected set. Images named outside an

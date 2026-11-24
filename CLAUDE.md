@@ -21,8 +21,8 @@ reaches the internet.
 - **MicroShift 4.20** is the only variant. A k3s variant was built by nothing and removed; it
   is in git history
 - On the cluster: cert-manager, External Secrets, KServe (Standard mode), a Triton
-  `ClusterServingRuntime`, a per-device CA published to every namespace and Valkey (one pod,
-  the primary), from `services/`. Still to come: PostgreSQL, RabbitMQ, the first
+  `ClusterServingRuntime`, a per-device CA published to every namespace, Valkey and
+  PostgreSQL (one pod each, the primary), from `services/`. Still to come: RabbitMQ, the first
   `InferenceService`
 - Every container image physically bound into the OS image (zero network at first boot)
 - A kiosk: a monitor on the Jetson's DisplayPort shows the frontend in Firefox, fullscreen. It
@@ -455,7 +455,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 - `microshift/manifest-images.sh` — prints every image the given manifest roots name, rendered
   with `oc kustomize` (release-info lists only the control plane, and `images:` transformers
   defeat a grep). The build embeds what it prints; `services/` uses it too.
-- `services/Containerfile` — seven numbered roots under `/usr/lib/microshift/manifests.d/`, plus
+- `services/Containerfile` — eight numbered roots under `/usr/lib/microshift/manifests.d/`, plus
   every image they name. MicroShift **sorts** the roots and applies each with the equivalent of
   `kubectl apply -k`, retrying a failing one **every 10 s for 10 minutes**
   (`pkg/kustomize/kustomize.go`) — that is the ordering and what covers a CRD not yet served.
@@ -638,13 +638,110 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
       `ACL SETUSER` users last until the next restart.
     Per-client isolation is a user per client restricted to a key prefix (`~billing:*`), not
     numbered databases. Not done: client certificates, a metrics exporter, replicas.
+  - `060-postgresql/` — **checked locally, not dispatched, not on hardware.** Built like
+    `050`: our own manifests, the tag in `postgresql.yaml` the pin, namespace `postgresql`, one
+    `StatefulSet` replica, `docker.io/library/postgres:18.7-alpine3.24`. Alpine for the eMMC
+    (118 MB compressed for arm64, against 161–167 MB for the Debian tags; 434 MB unpacked,
+    most of it LLVM for JIT). 18, not 19.0: 19.0 came out 2026-11-23, and a data store should
+    not be the first to run a major; moving to 19 later is a `pg_upgrade` or a dump, which
+    `init-db.sh` refuses to skip. Red Hat's `rhel9/postgresql-16` could not be inspected
+    (`registry.access.redhat.com` was unreachable when this was written); the docker.io image
+    fits restricted-v2 with its own nss_wrapper (below).
+    **Locally** (Docker, the amd64 variant of the same tag, run as UID 1000660000 with that
+    group added, files root-owned the way kubelet leaves them): `init-db.sh` on an empty volume,
+    again after a `SIGKILL` (stale `postmaster.pid`, PID 1), after a rotated `app` password and
+    an added role, and against an empty, non-alphanumeric, upper-case, `pg_*` or missing
+    password file, no files, a `PGDATA` with no `PG_VERSION`, a 17 cluster, a half-made
+    `data.initdb` (redone); the server with this `postgresql.conf` and `pg_hba.conf` and a
+    0440 key: `verify-full` as `app` to `app` works over TLS 1.3, Hebrew round-trips, `app` to
+    `postgres` or another role's database and `postgres` from the network are refused,
+    plaintext is refused, a wrong password fails, `postgres` over TLS on 127.0.0.1 works, `ALTER
+    SYSTEM` is refused; `tls-reload.sh` (with a 3 s sleep) has the server serve a swapped
+    certificate's serial, exits at once on TERM and INT; `pg_ctl stop -m fast` with a client in
+    `pg_sleep` stops in 0.1 s; a `SIGKILL` during a 3M-row `CREATE TABLE AS`, then the init
+    container under a 256 MiB limit replays ~275 MB of WAL and finishes; and the smoke test against all eight roots through kustomize
+    5.4.3 and a YAML-to-JSON stand-in for `oc`, with fifty-two broken variants (forty-six
+    PostgreSQL, six Valkey for the shared helpers) each caught. Never run: under CRI-O or
+    MicroShift, the arm64 image, restricted-v2's fsGroup on topolvm, ESO's generator, cert-manager issuing.
+    - **TLS only**: `ssl = on`, and `pg_hba.conf` has only `local` and `hostssl` lines, so a
+      plaintext connection matches none and is refused. `certificate.yaml`: Secret
+      `postgresql-tls` from `ClusterIssuer/device-ca`, as Valkey's. PostgreSQL rereads its
+      certificate only on a reload, so a second container, `tls-reload`, runs
+      `pg_reload_conf()` hourly over the socket as `postgres` (stateless: a check for a changed
+      file would miss a change made while it was restarting). Not `shareProcessNamespace` and
+      a `SIGHUP`: with one PID namespace a stale `postmaster.pid` can name a live process
+      after a power cut, and PostgreSQL then refuses to start. The key's Secret volume is
+      **0440**, not Valkey's 0444: PostgreSQL refuses a key others can read, and as root's file
+      reads it through its group, the fsGroup restricted-v2 sets (MustRunAs). Clients verify
+      with `device-ca-bundle` against `postgresql.postgresql.svc.cluster.local`.
+    - **pg_hba.conf**, first match wins: the socket for everyone with `scram-sha-256` (an
+      emptyDir no other pod mounts); `postgres` over TLS from 127.0.0.1 and ::1 only (`oc exec`,
+      `oc port-forward`), then `hostssl all postgres all reject`; then `hostssl sameuser all
+      all scram-sha-256`, so every other role reaches only the database named after it. No
+      `trust` anywhere, `md5` neither.
+    - **The whole configuration is in git**: `-c config_file=/etc/postgresql/postgresql.conf`
+      (the ConfigMap; the one initdb writes into `PGDATA` is never read), `hba_file` beside it,
+      `allow_alter_system = off`. 1Gi 1:1, CPU 250m → 1; `shared_buffers` 256MB, `work_mem`
+      4MB, `max_connections` 50; no parallel workers (one core of limit, and their dynamic
+      shared memory would outgrow CRI-O's 64 MB `/dev/shm`); `wal_compression = lz4`,
+      `checkpoint_timeout` 15min, `max_wal_size` 512MB for the eMMC's endurance; `fsync` and
+      `synchronous_commit` on. 4Gi PVC on topolvm, mounted at `/var/lib/postgresql`, `PGDATA`
+      `/var/lib/postgresql/data` below it (the mount's root is root's; initdb makes `PGDATA`
+      itself, 0700). No major in the path: a bump to 19 with a new path would start an empty
+      cluster beside the old one and look like data loss.
+    - **`init-db.sh`**, the init container (256Mi; the pod's effective request is the larger
+      of it and the containers', so it costs nothing): each projected password file is a role,
+      named after it; `postgres` is the superuser initdb makes. First start: `initdb` into
+      `data.initdb` and moved into place (a half-made cluster is never mistaken for one), with
+      `--locale-provider=builtin --locale=C.UTF-8` (code-point order, versioned with
+      PostgreSQL itself, so a new image's musl or ICU never invalidates an index; data
+      checksums are 18's default). initdb looks the running UID up in passwd and refuses an
+      SCC-assigned one: the script gives it the image's `libnss_wrapper.so` and a one-line
+      passwd. initdb's `sh: locale: not found` / `no usable system locales` warning is musl's,
+      harmless. Every start: refuses a `PGDATA` without `PG_VERSION` or of another major,
+      `chmod 0700`s it (kubelet's fsGroup pass adds g+rwx, which PostgreSQL refuses; also
+      `fsGroupChangePolicy: OnRootMismatch`, so that pass runs only once rather than walking
+      the data at every mount), starts a temporary server on a socket in a private `mktemp -d`
+      with `trust` there only, and through `psql` creates any missing role and its database
+      (`\gexec`, `REVOKE ALL ... FROM PUBLIC`), and sets every role's attributes (`LOGIN
+      NOSUPERUSER NOCREATEDB ...`) and password from its file (`\set pw` with backticks, never on
+      a command line; `log_min_error_statement=panic`, so a failing `ALTER ROLE` never logs the
+      password). So a password change reaches the server at the next pod start, an attribute
+      granted by hand on a node is undone, and crash recovery after a power cut runs here,
+      where no probe can kill it half-way. A role whose file is dropped keeps its database and
+      last password: nothing drops data. A new role is a projected item and an ExternalSecret
+      (and a `pg_hba.conf` line only if it is not `sameuser`).
+    - **Probes** `pg_isready -h /var/run/postgresql -U postgres -d postgres` (startup 5 min,
+      readiness, liveness): it never authenticates, but without `-U` libpq looks the UID up in
+      passwd, finds nothing, and reports `no attempt` on a healthy server (seen locally).
+      **preStop** `pg_ctl stop -m fast`: the default smart shutdown waits for every client to
+      leave, and a pool never does; grace 120 s for the shutdown checkpoint on the eMMC. The
+      image's `STOPSIGNAL` is SIGINT (fast) too, whether or not CRI-O honours it.
+    - `passwords.yaml` and `distribute.yaml` as Valkey's: `Password` generator (64, no symbols,
+      `allowRepeat`), `CreatedOnce`/`Orphan` ExternalSecrets `postgresql-postgres-password` and
+      `postgresql-app-password`; Secret `ultron-postgresql-credentials` (`username: app`,
+      `password`, `host`, `port`, `database: app`, `uri`
+      `postgresql://app:…@postgresql.postgresql.svc.cluster.local:5432/app?sslmode=verify-full`)
+      in every namespace labelled **`ultron/postgresql-client=true`**, through a Role on
+      `postgresql-app-password` only and a `ClusterSecretStore` whose `conditions` carry the
+      same selector. The URI has no `sslrootcert`: the client sets `PGSSLROOTCERT` (or its
+      driver's equivalent) to its `device-ca-bundle`'s `ca.crt`. Rotation is Valkey's
+      procedure with `postgresql-*` names and `oc delete pod -n postgresql postgresql-0`.
+      **The superuser's password never leaves `postgresql`**; a superuser shell with nothing
+      typed, from the container that mounts it: `oc exec -it -n postgresql postgresql-0 -c
+      tls-reload -- sh -c 'PGPASSWORD=$(cat /run/postgresql-passwords/postgres) psql -h
+      /var/run/postgresql -U postgres'` (the script's own `PGPASSWORD` is not in `oc exec`'s
+      environment).
+    Not done: backups (`pg_dump` to where is open), client certificates, a metrics exporter,
+    replicas, connection pooling, extensions beyond the image's contrib.
   **Resources rule**, every root: memory request = limit (OOM-killed at its own ceiling, never
   evicted for outgrowing a request), CPU limit = 4 × request (burst room at start-up). Pods
   stay Burstable. Upstream sets almost none of this.
-  **Images are derived from the render**: the version ARGs are the only pin, except Valkey's,
-  which is the tag in its StatefulSet. Eight today (`015`/`025` add none): cert-manager ×3,
-  External Secrets, `kserve-controller`, `kube-rbac-proxy`, `valkey:9.1.1-alpine3.24` and
-  `tritonserver:25.02-py3-igpu` (the largest). The scan reads only `image:` fields, so a
+  **Images are derived from the render**: the version ARGs are the only pin, except Valkey's
+  and PostgreSQL's, the tags in their StatefulSets. Nine today (`015`/`025` add none):
+  cert-manager ×3, External Secrets, `kserve-controller`, `kube-rbac-proxy`,
+  `valkey:9.1.1-alpine3.24`, `postgres:18.7-alpine3.24` and `tritonserver:25.02-py3-igpu` (the
+  largest). The scan reads only `image:` fields, so a
   model's `oci://` image, and images named inside `inferenceservice-config`, go in
   `SERVICE_IMAGES` when used.
   **Smoke test**: renders every root with `oc kustomize` and checks the workload set per root;
@@ -667,7 +764,18 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
   Secret, no binding to a role outside the render (whose rules it cannot see), each
   `ClusterExternalSecret`'s namespace selector neither `{}` nor different from its store's
   `conditions`, the TLS Secret a `Certificate`'s from `ClusterIssuer/device-ca` that names
-  every Service, and a headless `serviceName`. It prints `du -sh` of the cache, which the
+  every Service, and a headless `serviceName`. Those last checks are shared helpers
+  (`passwords_generated`, `distribution_limited`, `certificate_at`, `headless_service`) that
+  PostgreSQL's section runs too, after reading the `postgresql.conf` and `pg_hba.conf` the pod
+  mounts from the render's ConfigMap (not the root's files): `-c config_file=` in the command,
+  `ssl = on`, `allow_alter_system = off`, scram storage, key and cert in one Secret volume of
+  mode 0440 (no other bits, group read); in `pg_hba.conf` only `local`/`hostssl`, only
+  `scram-sha-256`/`reject`, no options, no `@`/`+`/`/`, the first `hostssl` line that can match
+  `postgres` from beyond loopback a `reject`, every other accepting one `sameuser`; the socket a
+  memory emptyDir that `tls-reload` is given and shares; three `pg_isready -h <socket> -U`
+  probes; one `PGDATA` in init and server, below a claim's mount, `-D $(PGDATA)`,
+  `OnRootMismatch`, a fast preStop; `init-db.sh` given the password directory, `postgres` and
+  `app` among its files, role names `init-db.sh` takes. It prints `du -sh` of the cache, which the
   eMMC pays for twice (`/usr` and containers-storage). Pods KServe builds at run time are in
   no render: their admission and GPU access are hardware questions.
 - `config.toml` — project-wide bib config with a **custom kickstart** (bib then adds only
@@ -751,8 +859,8 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
 (every job registers, and unregisters in `if: always()`), `OPENSHIFT_PULL_SECRET` (build-time
 image pulls, never in the image), `JETSON_SSH_PUBKEY`, `JETSON_PASSWORD_HASH`
 (`openssl passwd -6`), `JETSON_KIOSK_PASSWORD_HASH` (`openssl passwd -6`, the kiosk login; in
-the image, passed to every layer build and mounted only by `kiosk/`). Valkey's passwords are
-no secret here: ESO generates them on each node. Registration replaced an entitlement-cert tarball. Username/password is
+the image, passed to every layer build and mounted only by `kiosk/`). Valkey's and
+PostgreSQL's passwords are no secret here: ESO generates them on each node. Registration replaced an entitlement-cert tarball. Username/password is
 maintainer preference; an org ID + activation key is narrower and needed for SSO/2FA accounts.
 Credentials go through `env:`. With Simple Content Access off, register needs `--auto-attach`.
 The subscription needs OpenShift and ACM entitlements, or `rhocp` and `rhacm` never appear. A self-hosted registered RHEL 9 aarch64 runner would remove registration entirely.
@@ -787,7 +895,7 @@ hardware.
 3. Device plugin: the DaemonSet runs and allocatable `nvidia.com/gpu` equals the replica
    count. Run that many GPU pods at once and watch for OOM.
 4. Services: pods Running in `cert-manager` (3), `external-secrets-operator` (3), `kserve`
-   (1) and `valkey` (1), with no registry. A failing `runAsUser` patch shows in `oc describe
+   (1), `valkey` (1) and `postgresql` (1, three containers counting init), with no registry. A failing `runAsUser` patch shows in `oc describe
    rs`. Check resources survived (`oc get deploy -A -o jsonpath`). `journalctl -u microshift |
    grep -i kustomization` shows a root still retrying — watch `040`. Every services pod's
    `openshift.io/scc` annotation should be `restricted-v2`.
@@ -818,6 +926,19 @@ hardware.
    Transparent Huge Pages warnings matter for the snapshot fork (a `sysctl.d` drop-in and
    `transparent_hugepage=madvise` would fix them, neither is added); the arm64 variant of the
    tag pulls and starts.
+   PostgreSQL: the same certificate, ExternalSecret, `CreatedOnce`, `Orphan`, label and refused
+   unlabelled-store checks with `postgresql` names; `oc logs postgresql-0 -c init` ends in
+   `roles: app postgres`; `oc exec postgresql-0 -c postgresql -- ls -ldn /var/lib/postgresql
+   /var/lib/postgresql/data` (root and the fsGroup; the assigned UID, `drwx------`); from a
+   labelled namespace, `psql "$uri"` with `PGSSLROOTCERT` at the `device-ca-bundle` verifies,
+   `sslmode=disable` gets `no pg_hba.conf entry`, `postgres` from there gets `rejects
+   connection`, `app` to `dbname=postgres` is refused; `CREATE TABLE`, insert, delete the pod,
+   reboot, the row survives; pull the power while writing, and the next start's init log shows
+   recovery and the pod comes up; `oc delete secret -n postgresql postgresql-tls`, and within an
+   hour `openssl s_client -starttls postgres` shows the new serial with no restart; rotation
+   leaves clients failing for seconds at most; `oc exec ... -c tls-reload -- psql ... -c 'show
+   data_checksums'` → `on`; the restart of a deleted pod takes no 30 s for `tls-reload`
+   (`oc get events`).
 5. Serve a model: first `pvc://` (model repository `oc cp`'d into a topolvm PVC), proving the
    Triton tag runs on r36.5 and an SCC-assigned UID can open the GPU (`id`, `ls -ln
    /dev/nvhost-ctrl-gpu /dev/nvmap`; if `root:video 0660`, add `supplementalGroups` on the
@@ -860,7 +981,9 @@ lowering kubelet's image GC thresholds below the eviction line (only matters onc
 pulled); whether the `services/` resource sizes survive hardware (the ratios are enforced, the
 sizes are guesses); Valkey: a cache or a data store that must survive reboots (the PVC,
 `noeviction` and RDB-only assume the latter), client certificates, and whether a client gets its own prefix-scoped
-user; the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
+user; PostgreSQL: who its users are (one `app` role and database today; a role per client
+is a password file and an ExternalSecret away), the 4Gi PVC and 1Gi memory, backups, and when
+to move to 19; the kiosk's `KIOSK_URL`, what the screen costs Triton once measured, and
 the frontend's video codec, preview size and on-screen keyboard.
 
 ## How to work in this repo
