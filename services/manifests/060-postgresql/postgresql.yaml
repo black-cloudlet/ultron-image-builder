@@ -62,7 +62,7 @@ spec:
       # an unclean stop and sets every role's password from its Secret.
       initContainers:
         - name: init
-          image: docker.io/library/postgres:18.7-alpine3.24
+          image: registry.access.redhat.com/hi/postgresql:18.7-1795672513
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -93,7 +93,7 @@ spec:
               readOnly: true
       containers:
         - name: postgresql
-          image: docker.io/library/postgres:18.7-alpine3.24
+          image: registry.access.redhat.com/hi/postgresql:18.7-1795672513
           imagePullPolicy: IfNotPresent
           # Explicit command: skips the image entrypoint, whose initdb and
           # setup from environment variables init-db.sh does instead.
@@ -167,7 +167,7 @@ spec:
         # 'PGPASSWORD=$(cat /run/postgresql-passwords/postgres) psql
         # -h /var/run/postgresql -U postgres'
         - name: tls-reload
-          image: docker.io/library/postgres:18.7-alpine3.24
+          image: registry.access.redhat.com/hi/postgresql:18.7-1795672513
           imagePullPolicy: IfNotPresent
           command:
             - sh

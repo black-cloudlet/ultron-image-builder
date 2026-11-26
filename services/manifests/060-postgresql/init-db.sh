@@ -51,22 +51,27 @@ if [ -e "$PGDATA" ]; then
 	# PostgreSQL refuses a data directory its group may write.
 	chmod 0700 "$PGDATA"
 else
+	# initdb looks the running UID up in passwd, and the one restricted-v2
+	# assigns is in none. The image's /etc/passwd is writable by group 0,
+	# which OpenShift runs every container in, for exactly this: its own
+	# entrypoint, skipped here, adds the UID the same way. Only this
+	# container's copy changes.
+	if ! id -un >/dev/null 2>&1; then
+		[ -w /etc/passwd ] || {
+			echo "UID $(id -u) is not in /etc/passwd, which group $(id -g) cannot write;"
+			echo "initdb needs the UID there (OpenShift runs containers in group 0)"
+			ls -l /etc/passwd; exit 1
+		}
+		echo "postgres:x:$(id -u):$(id -g):PostgreSQL:$PGDATA:/sbin/nologin" >> /etc/passwd
+	fi
 	# Built beside it and moved into place, so a half-made cluster is never
-	# mistaken for one. initdb looks the running UID up in passwd, and the one
-	# restricted-v2 assigns is in none: the image's nss_wrapper answers for it.
-	nss=/usr/lib/libnss_wrapper.so
-	[ -f "$nss" ] || { echo "no $nss in the image; initdb cannot run as UID $(id -u)"; exit 1; }
+	# mistaken for one. The builtin C.UTF-8 locale sorts by code point and is
+	# versioned with PostgreSQL itself, so a new image's glibc or ICU never
+	# invalidates an index. Data checksums are PostgreSQL 18's default.
 	new=$PGDATA.initdb
 	rm -rf "$new"
-	passwd=$(mktemp)
-	echo "postgres:x:$(id -u):$(id -g):PostgreSQL:$PGDATA:/sbin/nologin" > "$passwd"
-	# The builtin C.UTF-8 locale sorts by code point and is versioned with
-	# PostgreSQL itself, so a new image's libc or ICU never invalidates an
-	# index. Data checksums are PostgreSQL 18's default.
-	LD_PRELOAD=$nss NSS_WRAPPER_PASSWD=$passwd NSS_WRAPPER_GROUP=/etc/group \
-		initdb -D "$new" -U postgres --pwfile="$pwdir/postgres" \
-			--no-instructions -A scram-sha-256 -E UTF8 --locale-provider=builtin --locale=C.UTF-8
-	rm -f "$passwd"
+	initdb -D "$new" -U postgres --pwfile="$pwdir/postgres" \
+		--no-instructions -A scram-sha-256 -E UTF8 --locale-provider=builtin --locale=C.UTF-8
 	mv "$new" "$PGDATA"
 fi
 
