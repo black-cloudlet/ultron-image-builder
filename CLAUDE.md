@@ -639,7 +639,7 @@ Both are idempotent and have been run end to end: station provisioned, devkit QS
       `ACL SETUSER` users last until the next restart.
     Per-client isolation is a user per client restricted to a key prefix (`~billing:*`), not
     numbered databases. Not done: client certificates, a metrics exporter, replicas.
-  - `060-postgresql/` — **checked locally, not dispatched, not on hardware.** Built like
+  - `070-postgresql/` — **checked locally, not dispatched, not on hardware.** Built like
     `050`: our own manifests, the tag in `postgresql.yaml` the pin, namespace `postgresql`, one
     `StatefulSet` replica, Red Hat's hardened image
     **`registry.access.redhat.com/hi/postgresql:18.7-1795672513`** (Project Hummingbird; the

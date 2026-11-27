@@ -73,7 +73,7 @@ Deployment/external-secrets-cert-controller
 Deployment/external-secrets-webhook"
 expect_workloads 030-kserve "Deployment/kserve-controller-manager"
 expect_workloads 050-valkey "StatefulSet/valkey"
-expect_workloads 060-postgresql "StatefulSet/postgresql"
+expect_workloads 070-postgresql "StatefulSet/postgresql"
 
 eso=$render/020-external-secrets.json
 
@@ -383,8 +383,8 @@ echo "== postgresql =="
 # pod crash-loops on a node nobody can ssh into, or, worse, takes plaintext or
 # the superuser from the network, or a password reaches a namespace it should
 # not. Every failure lists the root.
-sroot=/usr/lib/microshift/manifests.d/060-postgresql
-sr=$render/060-postgresql.json
+sroot=/usr/lib/microshift/manifests.d/070-postgresql
+sr=$render/070-postgresql.json
 main=$(jq -c "$W"' workloads | podspec | .containers[] | select(.command[0] == "postgres")' "$sr")
 [[ $(jq -s length <<<"$main") == 1 ]] \
 	|| sfail "want one container whose command is postgres, got:" "$(jq -r .name <<<"$main")"
