@@ -1,0 +1,236 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgresql
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+---
+# The StatefulSet's governing Service: headless, so the pod gets its own name,
+# postgresql-0.postgresql-headless.postgresql.svc.cluster.local.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgresql
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+spec:
+  serviceName: postgresql-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgresql
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        # restricted-v2 sets the fsGroup, which the data volume and the
+        # key's group read rely on. Its first pass leaves the volume's root
+        # with that group; after that kubelet leaves the data alone, rather
+        # than walking every file on the eMMC at each mount.
+        fsGroupChangePolicy: OnRootMismatch
+      # The fast shutdown's checkpoint writes up to shared_buffers to the eMMC.
+      terminationGracePeriodSeconds: 120
+      # Creates the cluster on first start; on every start, recovers it after
+      # an unclean stop and sets every role's password from its Secret.
+      initContainers:
+        - name: init
+          image: registry.access.redhat.com/hi/postgresql:18.7-1795672513
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - /etc/postgresql/init-db.sh
+            - /run/postgresql-passwords
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 400m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: config
+              mountPath: /etc/postgresql
+              readOnly: true
+            - name: passwords
+              mountPath: /run/postgresql-passwords
+              readOnly: true
+      containers:
+        - name: postgresql
+          image: registry.access.redhat.com/hi/postgresql:18.7-1795672513
+          imagePullPolicy: IfNotPresent
+          # Explicit command: skips the image entrypoint, whose initdb and
+          # setup from environment variables init-db.sh does instead.
+          command:
+            - postgres
+            - -D
+            - $(PGDATA)
+            - -c
+            - config_file=/etc/postgresql/postgresql.conf
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # pg_isready asks whether the server accepts connections and never
+          # authenticates. -U: without it libpq looks the UID up in passwd,
+          # where the assigned one is not, and pg_isready gives up. Recovery
+          # runs in the init container, so the start-up budget covers only
+          # the server starting.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-q", "-h", "/var/run/postgresql", "-U", "postgres", "-d", "postgres"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-q", "-h", "/var/run/postgresql", "-U", "postgres", "-d", "postgres"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-q", "-h", "/var/run/postgresql", "-U", "postgres", "-d", "postgres"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # Fast shutdown: rolls back open transactions and disconnects
+          # clients. The default, smart, waits for every client to leave,
+          # which a connection pool never does, so the pod would be killed at
+          # the end of its grace period and recover at the next start.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "pg_ctl -D \"$PGDATA\" stop -m fast -w -t 110"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: config
+              mountPath: /etc/postgresql
+              readOnly: true
+            - name: tls
+              mountPath: /etc/postgresql-tls
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+        # Has PostgreSQL reread its renewed certificate (tls-reload.sh). It
+        # mounts the superuser's password, so a superuser psql on the socket
+        # needs nothing typed: oc exec -it -c tls-reload postgresql-0 -- sh -c
+        # 'PGPASSWORD=$(cat /run/postgresql-passwords/postgres) psql
+        # -h /var/run/postgresql -U postgres'
+        - name: tls-reload
+          image: registry.access.redhat.com/hi/postgresql:18.7-1795672513
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - /etc/postgresql/tls-reload.sh
+            - /var/run/postgresql
+            - /run/postgresql-passwords/postgres
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 40m
+              memory: 32Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/postgresql
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: passwords
+              mountPath: /run/postgresql-passwords
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: postgresql-config
+        # 0444, as Valkey's: readable without counting on the fsGroup. They
+        # are visible only inside this pod.
+        - name: passwords
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret:
+                  name: postgresql-postgres-password
+                  items:
+                    - key: password
+                      path: postgres
+              - secret:
+                  name: postgresql-app-password
+                  items:
+                    - key: password
+                      path: app
+        # 0440, not 0444: PostgreSQL refuses a key file anyone but its owner
+        # and the owner's group can read. Owned by root, so it reads the key
+        # through the group, which is the fsGroup.
+        - name: tls
+          secret:
+            secretName: postgresql-tls
+            defaultMode: 0440
+        # The socket and its lock file. Memory: nothing here belongs on disk.
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 4Gi

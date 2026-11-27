@@ -1,0 +1,96 @@
+# app's credentials, as Secret ultron-postgresql-credentials, into every
+# namespace labelled ultron/postgresql-client=true, new ones included. The label
+# is the grant: whoever may label a namespace, or create one with the label
+# set, gets app's password. On MicroShift both are cluster-admin's alone (there
+# is no project self-provisioning); a role that adds either widens this. The
+# superuser's password is never served: the Role names only app's Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgresql-credentials-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: postgresql-credentials-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["postgresql-app-password"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: postgresql-credentials-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: postgresql-credentials-reader
+subjects:
+  - kind: ServiceAccount
+    name: postgresql-credentials-reader
+    namespace: postgresql
+---
+# conditions: a ClusterSecretStore can be named from any namespace, so without
+# them anyone allowed to create an ExternalSecret anywhere could read app's
+# password. Same label as the ClusterExternalSecret below.
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: postgresql-credentials
+spec:
+  conditions:
+    - namespaceSelector:
+        matchLabels:
+          ultron/postgresql-client: "true"
+  provider:
+    kubernetes:
+      remoteNamespace: postgresql
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          namespace: postgresql
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: postgresql-credentials-reader
+          namespace: postgresql
+---
+# refreshInterval: a rotated password reaches clients within the hour unless
+# force-synced (passwords.yaml). Prefixed names: a client namespace may already
+# have its own postgresql-credentials, which ESO would neither replace nor
+# adopt. uri carries sslmode=verify-full but no sslrootcert: the client sets
+# PGSSLROOTCERT (or its driver's equivalent) to the ca.crt of the
+# device-ca-bundle ConfigMap in its namespace.
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata:
+  name: ultron-postgresql-credentials
+spec:
+  externalSecretName: ultron-postgresql-credentials
+  namespaceSelectors:
+    - matchLabels:
+        ultron/postgresql-client: "true"
+  externalSecretSpec:
+    refreshInterval: 1h
+    secretStoreRef:
+      kind: ClusterSecretStore
+      name: postgresql-credentials
+    target:
+      name: ultron-postgresql-credentials
+      creationPolicy: Owner
+      template:
+        data:
+          username: app
+          password: "{{ .password }}"
+          host: postgresql.postgresql.svc.cluster.local
+          port: "5432"
+          database: app
+          uri: "postgresql://app:{{ .password }}@postgresql.postgresql.svc.cluster.local:5432/app?sslmode=verify-full"
+    data:
+      - secretKey: password
+        remoteRef:
+          key: postgresql-app-password
+          property: password
