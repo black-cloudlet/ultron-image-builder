@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  labels:
+    app.kubernetes.io/name: mongodb
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+---
+# The StatefulSet's governing Service: headless, so the pod gets its own name,
+# mongodb-0.mongodb-headless.mongodb.svc.cluster.local.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-headless
+  labels:
+    app.kubernetes.io/name: mongodb
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  labels:
+    app.kubernetes.io/name: mongodb
+spec:
+  serviceName: mongodb-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongodb
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mongodb
+          image: docker.io/percona/percona-server-mongodb:8.0.38-16
+          imagePullPolicy: IfNotPresent
+          # The image's entrypoint stays: on an empty /data/db it starts a
+          # temporary mongod on 127.0.0.1, creates root from the variables
+          # below, runs /docker-entrypoint-initdb.d (app), stops it, then
+          # execs this command. Its gosu step runs only when started as root,
+          # which restricted-v2 never does.
+          # --auth here as well as from the entrypoint, which adds it only
+          # while the root variables are set: without it every pod on the
+          # node reads and writes everything. --bind_ip_all: the entrypoint
+          # would add it too; the Services are the only way in, and the node
+          # firewall does not open 27017.
+          # 0.25 GB of WiredTiger cache, a quarter of the limit: the rest is
+          # connections, query memory and the entrypoint's own mongosh on the
+          # first start. The default, half of (RAM - 1 GB) with a 0.25 floor,
+          # comes out the same when mongod reads the cgroup limit, as it did
+          # locally (cgroup v1); explicit so it does not hinge on that on the
+          # node's v2, where the SOM's 32 GB would give ~15 GB and an OOM kill.
+          args:
+            - mongod
+            - --auth
+            - --bind_ip_all
+            - --wiredTigerCacheSizeGB
+            - "0.25"
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: root
+            - name: MONGO_INITDB_ROOT_PASSWORD_FILE
+              value: /run/mongodb-passwords/root
+            # Off: otherwise the entrypoint starts Percona's telemetry agent
+            # beside mongod, which phones check.percona.com on a node that
+            # has no route out, and mongod writes telemetry files to disk.
+            - name: PERCONA_TELEMETRY_DISABLE
+              value: "1"
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # TCP, not a mongosh ping: mongosh is Node.js, ~100 MB and a second
+          # of CPU per probe. During the first start's user creation mongod
+          # listens on 127.0.0.1 only, so the pod address refuses until the
+          # real one is up. The startup probe gives that, and WiredTiger's
+          # recovery after an unclean stop, five minutes before liveness
+          # counts: a kill mid-way through the first start would leave
+          # /data/db initialised and the users unmade, for good.
+          startupProbe:
+            tcpSocket:
+              port: mongodb
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: mongodb
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            tcpSocket:
+              port: mongodb
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: passwords
+              mountPath: /run/mongodb-passwords
+              readOnly: true
+      # 0444: the container's UID is assigned by the SCC, and it reads these
+      # without counting on an fsGroup. They are visible only inside this pod.
+      volumes:
+        - name: initdb
+          configMap:
+            name: mongodb-initdb
+        - name: passwords
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret:
+                  name: mongodb-root-password
+                  items:
+                    - key: password
+                      path: root
+              - secret:
+                  name: mongodb-app-password
+                  items:
+                    - key: password
+                      path: app
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

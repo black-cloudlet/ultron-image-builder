@@ -1,0 +1,93 @@
+# app's password, as Secret ultron-mongodb-credentials (username, password,
+# authSource), into every namespace labelled ultron/mongodb-client=true, new
+# ones included. The label is the grant: whoever may label a namespace, or
+# create one with the label set, gets app's password. On MicroShift both are cluster-admin's alone
+# (there is no project self-provisioning); a role that adds either widens this.
+# root's password is never served: the Role names only app's Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mongodb-credentials-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mongodb-credentials-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["mongodb-app-password"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mongodb-credentials-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mongodb-credentials-reader
+subjects:
+  - kind: ServiceAccount
+    name: mongodb-credentials-reader
+    namespace: mongodb
+---
+# conditions: a ClusterSecretStore can be named from any namespace, so without
+# them anyone allowed to create an ExternalSecret anywhere could read app's
+# password. Same label as the ClusterExternalSecret below.
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: mongodb-credentials
+spec:
+  conditions:
+    - namespaceSelector:
+        matchLabels:
+          ultron/mongodb-client: "true"
+  provider:
+    kubernetes:
+      remoteNamespace: mongodb
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          namespace: mongodb
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: mongodb-credentials-reader
+          namespace: mongodb
+---
+# refreshInterval: a rotated password reaches clients within the hour unless
+# force-synced (passwords.yaml). authSource: app is a user of the admin
+# database, and a URI naming another database authenticates against that one
+# unless it says ?authSource=admin. Prefixed names: a client namespace may
+# already have its own mongodb-credentials, which ESO would neither replace nor
+# adopt.
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata:
+  name: ultron-mongodb-credentials
+spec:
+  externalSecretName: ultron-mongodb-credentials
+  namespaceSelectors:
+    - matchLabels:
+        ultron/mongodb-client: "true"
+  externalSecretSpec:
+    refreshInterval: 1h
+    secretStoreRef:
+      kind: ClusterSecretStore
+      name: mongodb-credentials
+    target:
+      name: ultron-mongodb-credentials
+      creationPolicy: Owner
+      template:
+        data:
+          username: app
+          password: "{{ .password }}"
+          authSource: admin
+    data:
+      - secretKey: password
+        remoteRef:
+          key: mongodb-app-password
+          property: password
