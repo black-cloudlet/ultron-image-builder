@@ -805,4 +805,5 @@ The design record, with every decision and why, is `CLAUDE.md`.
 | `.github/workflows/build-image.yml` | reusable: build, test and push one layer |
 | `.github/workflows/build-iso.yml` | reusable: build the installer ISO |
 | `.github/workflows/ultron.yml` | the pipeline: base → bound-images → kiosk → microshift → services → ISO |
+| `DEPLOY-INFERENCE-SERVER.md` | for a model team: build a model image and deploy it with Argo CD as a KServe InferenceService on `triton-igpu` |
 | `CLAUDE.md` | the design record: decisions, rationale, open questions |
